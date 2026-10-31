@@ -329,6 +329,8 @@ pub struct FloorTab {
     last_wall_edit: Option<std::time::Instant>,
     /// Plan position where a selection box was started.
     box_start: Option<Pos2>,
+    /// A wall or obstacle area is being dragged (moved), not a box drawn.
+    obj_drag: bool,
     report_dialog: Option<report::OptionsDialog>,
 }
 
@@ -518,6 +520,7 @@ impl Default for FloorTab {
             wall_history: Vec::new(),
             last_wall_edit: None,
             box_start: None,
+            obj_drag: false,
             report_dialog: None,
         }
     }
@@ -2541,12 +2544,77 @@ impl FloorTab {
         }
     }
 
+    /// Drag a wall or an obstacle area (whichever of `walls` and `areas` this tool deals with) from
+    /// where the press began: it moves, with the rest of the selection if it is part of it. A drag
+    /// that does not begin on one is left alone.
+    fn object_drag(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, to_screen: &impl Fn(Pos2) -> Pos2, walls: bool, areas: bool, avoid_devices: bool) {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            self.obj_drag = false;
+            let press = ui.input(|i| i.pointer.press_origin());
+            // A device under the press takes the drag (it is moved instead).
+            let on_device = avoid_devices && press.is_some_and(|o| self.project.as_ref().is_some_and(|p| p.floor().layer(self.mode == WorkMode::Plan).iter().any(|a| to_screen(Pos2::new(a.x, a.y)).distance(o) <= AP_PICK_PX)));
+            let origin = press.map(to_plan).filter(|_| !on_device);
+            let hit = origin.and_then(|p| {
+                let floor = self.project.as_ref()?.floor();
+                let radius = WALL_PICK_PX / zoom;
+                let wall = if walls {
+                    floor.walls.iter().enumerate().map(|(i, w)| (i, w.distance_to([p.x, p.y]))).filter(|(_, d)| *d <= radius).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+                } else {
+                    None
+                };
+                let area = if wall.is_none() && areas { floor.areas.iter().rposition(|a| a.contains([p.x, p.y])) } else { None };
+                (wall.is_some() || area.is_some()).then_some((wall, area))
+            });
+            if let Some((wall, area)) = hit {
+                let already = wall.is_some_and(|i| self.selected_walls.contains(&i)) || area.is_some_and(|i| self.selected_areas.contains(&i));
+                if !already {
+                    if !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+                        self.selected_walls.clear();
+                        self.selected_areas.clear();
+                    }
+                    self.selected_walls.extend(wall);
+                    self.selected_areas.extend(area);
+                }
+                self.remember_walls(false);
+                self.obj_drag = true;
+            }
+        }
+        if self.obj_drag && resp.dragged_by(egui::PointerButton::Primary) {
+            let d = resp.drag_delta() / zoom;
+            let (selected_walls, selected_areas) = (self.selected_walls.clone(), self.selected_areas.clone());
+            if let Some(p) = self.project.as_mut() {
+                let floor = p.floor_mut();
+                for i in selected_walls {
+                    if let Some(w) = floor.walls.get_mut(i) {
+                        (w.a[0], w.a[1], w.b[0], w.b[1]) = (w.a[0] + d.x, w.a[1] + d.y, w.b[0] + d.x, w.b[1] + d.y);
+                    }
+                }
+                for i in selected_areas {
+                    if let Some(a) = floor.areas.get_mut(i) {
+                        for pt in a.points.iter_mut() {
+                            *pt = [pt[0] + d.x, pt[1] + d.y];
+                        }
+                    }
+                }
+            }
+        }
+        if self.obj_drag && resp.drag_stopped_by(egui::PointerButton::Primary) {
+            self.obj_drag = false;
+            self.heat_dirty = true;
+            self.pred_dirty = true;
+            self.autosave();
+        }
+    }
+
     /// Select walls and obstacle areas by clicking or dragging a box; Shift or Ctrl adds.
-    fn select_walls(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2) {
+    fn select_walls(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, to_screen: &impl Fn(Pos2) -> Pos2) {
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         if resp.drag_started_by(egui::PointerButton::Primary) {
-            self.box_start = ui.input(|i| i.pointer.press_origin()).map(to_plan);
+            // A box starts only in open space: not on a device, wall or obstacle, which the drag moves instead.
+            let origin = ui.input(|i| i.pointer.press_origin());
+            let on_device = origin.is_some_and(|o| floor.layer(self.mode == WorkMode::Plan).iter().any(|a| to_screen(Pos2::new(a.x, a.y)).distance(o) <= AP_PICK_PX));
+            self.box_start = if self.obj_drag || on_device { None } else { origin.map(to_plan) };
         }
         if resp.drag_stopped_by(egui::PointerButton::Primary) && self.ap_drag.is_some() {
             // A device was being moved, not a box drawn.
@@ -3120,7 +3188,7 @@ impl FloorTab {
         } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::Client) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
-            resp.dragged()
+            resp.dragged() && !self.obj_drag
         };
         if panning {
             self.offset += resp.drag_delta();
@@ -3179,6 +3247,7 @@ impl FloorTab {
         if matches!(self.tool, Tool::Walls | Tool::Select) {
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if self.tool == Tool::Walls {
+                self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, true, false, false);
                 if resp.secondary_clicked() || escape {
                     self.wall_start = None;
                 } else if resp.clicked()
@@ -3187,7 +3256,8 @@ impl FloorTab {
                     self.wall_click(plan, zoom);
                 }
             } else {
-                self.select_walls(&resp, ui, zoom, &to_plan);
+                self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, true, true, true);
+                self.select_walls(&resp, ui, zoom, &to_plan, &to_screen);
                 self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
                 if escape {
                     self.selected_walls.clear();
@@ -3207,6 +3277,7 @@ impl FloorTab {
                 self.undo_walls();
             }
         } else if self.tool == Tool::Obstacles {
+            self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, false, true, false);
             self.area_input(&resp, ui, zoom, &to_plan, (img_w, img_h));
         } else if self.tool == Tool::Client {
             self.client_input(&resp, &to_plan, (img_w, img_h));
