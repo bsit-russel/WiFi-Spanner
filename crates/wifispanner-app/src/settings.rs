@@ -90,6 +90,12 @@ pub struct Settings {
     pub max_dbm: f64,
     /// Readings weaker than this count as not heard.
     pub detect_dbm: f64,
+    // Channels
+    /// Channel widths (MHz) the channel plan uses on each band, and whether it may use DFS channels.
+    pub plan_width_2_4: u32,
+    pub plan_width_5: u32,
+    pub plan_width_6: u32,
+    pub allow_dfs: bool,
 }
 
 impl Default for Settings {
@@ -115,11 +121,20 @@ impl Default for Settings {
             min_dbm: RAMP_MIN,
             max_dbm: RAMP_MAX,
             detect_dbm: SIGNAL_FLOOR,
+            plan_width_2_4: 20,
+            plan_width_5: 40,
+            plan_width_6: 80,
+            allow_dfs: false,
         }
     }
 }
 
 impl Settings {
+    /// The channel widths and DFS choice for the channel plan.
+    pub fn plan_options(&self) -> wifispanner_core::channels::PlanOptions {
+        wifispanner_core::channels::PlanOptions { width_2_4: self.plan_width_2_4, width_5: self.plan_width_5, width_6: self.plan_width_6, allow_dfs: self.allow_dfs }
+    }
+
     fn path() -> PathBuf {
         crate::store::config_dir().join("settings.json")
     }

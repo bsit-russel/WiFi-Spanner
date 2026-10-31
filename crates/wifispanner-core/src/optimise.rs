@@ -26,6 +26,10 @@ const SPOTS_ACROSS: f32 = 28.0;
 const MAX_PASSES: usize = 8;
 /// Access points keep at least this far (metres) from a wall.
 const WALL_CLEARANCE_M: f32 = 0.5;
+/// Gaps in the walls up to twice this (metres) are treated as closed when finding the building's outline.
+const SEAL_M: f32 = 3.0;
+/// Coverage also counts this far (metres) outside the walls.
+const BUFFER_M: f32 = 1.2;
 
 /// A signal this strong (dBm) or better counts as good coverage.
 pub const GOOD_DBM: f32 = -67.0;
@@ -39,6 +43,22 @@ pub const ROAM_DBM: f32 = -75.0;
 const ROAM_WEIGHT: f32 = 0.1;
 /// An extra access point must add at least this share of the floor to be worth suggesting.
 const WORTH_SHARE: f32 = 0.02;
+
+/// What the optimiser is to achieve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Goal {
+    /// The signal (dBm) that counts as good coverage; wider channels need a stronger one.
+    pub good_dbm: f32,
+    /// False to only judge the access points where they stand (coverage, roaming, more access
+    /// points needed) without moving any.
+    pub move_aps: bool,
+}
+
+impl Default for Goal {
+    fn default() -> Self {
+        Goal { good_dbm: GOOD_DBM, move_aps: true }
+    }
+}
 
 /// What the optimiser found.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +80,7 @@ pub struct Outcome {
 /// New positions (plan pixels) for the enabled access points of `floor.aps` that have a radio on
 /// `band`, as `(index in floor.aps, [x, y])`. Only those that move are listed; an empty list
 /// means the plan is already as good as it gets.
-pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Outcome, Unavailable> {
+pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32, goal: &Goal) -> Result<Outcome, Unavailable> {
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0).ok_or(Unavailable::NoScale)?;
     let movers: Vec<(usize, &PlannedAp, f32)> = floor
         .aps
@@ -82,11 +102,10 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Outcome, 
         let (w, h) = (((span_x / step).ceil() as usize).max(1), ((span_y / step).ceil() as usize).max(1));
         (0..w * h)
             .map(|i| [min[0] + ((i % w) as f32 + 0.5) * step, min[1] + ((i / w) as f32 + 0.5) * step])
-            .filter(|p| zone.as_ref().is_none_or(|z| z.contains(*p)))
             .collect::<Vec<[f32; 2]>>()
     };
-    let mut samples = grid(SAMPLES_ACROSS);
-    let mut spots = grid(SPOTS_ACROSS);
+    let mut samples: Vec<[f32; 2]> = grid(SAMPLES_ACROSS).into_iter().filter(|p| zone.as_ref().is_none_or(|z| z.contains(*p))).collect();
+    let mut spots: Vec<[f32; 2]> = grid(SPOTS_ACROSS).into_iter().filter(|p| zone.as_ref().is_none_or(|z| z.can_place(*p))).collect();
     if samples.is_empty() || spots.is_empty() {
         // The zone is too small to sample: use the whole page as before.
         let whole = |across: f32| {
@@ -216,14 +235,20 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Outcome, 
     };
     // Two starts: from nothing (each where it adds the most) and from where they stand now.
     let nearest = |p: [f32; 2]| (0..spots.len()).min_by(|a, b| dist2(spots[*a], p).total_cmp(&dist2(spots[*b], p)));
-    let from_scratch = ascend(vec![None; movers.len()]);
-    let from_here = ascend(movers.iter().map(|(_, ap, _)| nearest([ap.x, ap.y])).collect());
+    let (from_scratch, from_here) = if goal.move_aps {
+        (ascend(vec![None; movers.len()]), ascend(movers.iter().map(|(_, ap, _)| nearest([ap.x, ap.y])).collect()))
+    } else {
+        (vec![None; movers.len()], vec![None; movers.len()])
+    };
     let placed = if total_of(&from_here) >= total_of(&from_scratch) { from_here } else { from_scratch };
     // Keep what is there unless the search found something clearly better, or something stands outside the walls.
-    let outside = zone.as_ref().is_some_and(|z| movers.iter().any(|(_, ap, _)| !z.contains([ap.x, ap.y])));
-    let share_at = |v: &[f32], limit: f32| v.iter().filter(|b| **b >= limit).count() as f32 / v.len().max(1) as f32;
-    let share = |best: &[f32]| share_at(best, GOOD_DBM);
-    let keep = !outside && total_of(&placed) <= total(&current, &current_second) + 0.05;
+    let outside = zone.as_ref().is_some_and(|z| movers.iter().any(|(_, ap, _)| !z.can_place([ap.x, ap.y])));
+    // Coverage is judged inside the walls; the margin around the building only steers the search.
+    let core: Vec<bool> = samples.iter().map(|p| zone.as_ref().is_none_or(|z| z.can_place(*p))).collect();
+    let core_count = core.iter().filter(|c| **c).count().max(1);
+    let share_at = |v: &[f32], limit: f32| v.iter().zip(&core).filter(|(b, c)| **c && **b >= limit).count() as f32 / core_count as f32;
+    let share = |best: &[f32]| share_at(best, goal.good_dbm);
+    let keep = !goal.move_aps || (!outside && total_of(&placed) <= total(&current, &current_second) + 0.05);
     let (moves, after, after_second): (Vec<(usize, [f32; 2])>, Vec<f32>, Vec<f32>) = if keep {
         (Vec::new(), current.clone(), current_second.clone())
     } else {
@@ -260,13 +285,26 @@ struct Zone {
     max: [f32; 2],
     cell: f32,
     w: usize,
+    /// Where coverage counts: the area inside all the walls with a margin around them.
     inside: Vec<bool>,
+    /// Where access points may stand: the same without the margin.
+    placing: Vec<bool>,
     /// When the walls leave a gap, the convex hull of the walls instead.
     hull: Option<Vec<[f32; 2]>>,
 }
 
 impl Zone {
+    /// Is `p` somewhere coverage counts?
     fn contains(&self, p: [f32; 2]) -> bool {
+        self.lookup(&self.inside, p)
+    }
+
+    /// May an access point stand at `p`?
+    fn can_place(&self, p: [f32; 2]) -> bool {
+        self.lookup(&self.placing, p)
+    }
+
+    fn lookup(&self, grid: &[bool], p: [f32; 2]) -> bool {
         if let Some(h) = &self.hull {
             return in_hull(h, p);
         }
@@ -275,7 +313,7 @@ impl Zone {
             return false;
         }
         let (x, y) = (x as usize, y as usize);
-        x < self.w && y * self.w + x < self.inside.len() && self.inside[y * self.w + x]
+        x < self.w && y * self.w + x < grid.len() && grid[y * self.w + x]
     }
 }
 
@@ -321,7 +359,27 @@ fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
     // The building is its longest group of walls, and any other group of real size (a garage or an
     // annexe standing a little apart); small groups elsewhere on the page are not the building.
     let longest = length.values().copied().fold(0.0f32, f32::max);
-    let keep: Vec<usize> = length.iter().filter(|(_, l)| **l >= longest * 0.15).map(|(r, _)| *r).collect();
+    let mut keep: Vec<usize> = length.iter().filter(|(_, l)| **l >= longest * 0.15).map(|(r, _)| *r).collect();
+    // Smaller groups inside the building's outline (a kitchen block, a few walls of an open-plan area) belong to it.
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for i in 0..walls.len() {
+        if keep.contains(&root(&mut group, i)) {
+            for p in [walls[i].a, walls[i].b] {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+        }
+    }
+    let slack = 1.0 / mpp;
+    for i in 0..walls.len() {
+        let c = [(walls[i].a[0] + walls[i].b[0]) / 2.0, (walls[i].a[1] + walls[i].b[1]) / 2.0];
+        let r = root(&mut group, i);
+        if !keep.contains(&r) && (0..2).all(|k| c[k] >= lo[k] - slack && c[k] <= hi[k] + slack) {
+            keep.push(r);
+        }
+    }
     let mine: Vec<&crate::walls::Wall> = (0..walls.len()).filter(|&i| keep.contains(&root(&mut group, i))).map(|i| &walls[i]).collect();
     if mine.len() < 4 {
         return None;
@@ -336,9 +394,13 @@ fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
         }
     }
     let cell = (0.2 / mpp).max(2.0);
-    let (w, h) = ((((max[0] - min[0]) / cell).ceil() as usize + 3).max(3), (((max[1] - min[1]) / cell).ceil() as usize + 3).max(3));
-    let origin = [min[0] - cell, min[1] - cell];
-    // Walls are drawn into the grid a cell and a bit thick, so a doorway-sized gap does not let the outside in.
+    // The margin kept around the walls, in cells: it closes gaps in the walls (a doorway, the space
+    // between a garage and the house) and is the buffer around the building where coverage counts.
+    let margin = (SEAL_M / (cell * mpp)).ceil() as usize;
+    let buffer = (BUFFER_M / (cell * mpp)).ceil() as usize;
+    let pad = margin + 3;
+    let (w, h) = ((((max[0] - min[0]) / cell).ceil() as usize) + 2 * pad, (((max[1] - min[1]) / cell).ceil() as usize) + 2 * pad);
+    let origin = [min[0] - pad as f32 * cell, min[1] - pad as f32 * cell];
     let mut wall = vec![false; w * h];
     for s in &mine {
         let len = s.length_px();
@@ -347,42 +409,92 @@ fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
             let t = k as f32 / steps as f32;
             let (x, y) = (s.a[0] + (s.b[0] - s.a[0]) * t, s.a[1] + (s.b[1] - s.a[1]) * t);
             let (cx, cy) = (((x - origin[0]) / cell) as isize, ((y - origin[1]) / cell) as isize);
-            for dy in -1..=1isize {
-                for dx in -1..=1isize {
-                    let (nx, ny) = (cx + dx, cy + dy);
-                    if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
-                        wall[ny as usize * w + nx as usize] = true;
-                    }
-                }
+            if cx >= 0 && cy >= 0 && (cx as usize) < w && (cy as usize) < h {
+                wall[cy as usize * w + cx as usize] = true;
             }
         }
     }
-    // The outside: everything reachable from the border without crossing a wall.
+    // Close the walls: grow them by the margin, then shrink back, which bridges gaps (a doorway, an
+    // open side, the space between a garage and the house) without fattening the walls. What the
+    // closed walls enclose is the building.
+    let grown = distance_within(&wall, w, h, margin);
+    let grown_mask: Vec<bool> = grown.iter().map(|d| (*d as usize) <= margin).collect();
+    let away = distance_within(&grown_mask.iter().map(|g| !g).collect::<Vec<_>>(), w, h, margin);
+    let closed: Vec<bool> = (0..w * h).map(|i| grown_mask[i] && (away[i] as usize) > margin).collect();
     let mut outside = vec![false; w * h];
-    let mut stack: Vec<usize> = (0..w * h).filter(|i| (i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1) && !wall[*i]).collect();
+    let mut stack: Vec<usize> = (0..w * h).filter(|i| (i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1) && !closed[*i]).collect();
     for &i in &stack {
         outside[i] = true;
     }
     while let Some(i) = stack.pop() {
         let (x, y) = (i % w, i / w);
         for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
-            if nx < w && ny < h && !outside[ny * w + nx] && !wall[ny * w + nx] {
+            if nx < w && ny < h && !outside[ny * w + nx] && !closed[ny * w + nx] {
                 outside[ny * w + nx] = true;
                 stack.push(ny * w + nx);
             }
         }
     }
-    let inside: Vec<bool> = (0..w * h).map(|i| !outside[i]).collect();
-    let enclosed = inside.iter().filter(|b| **b).count();
-    let (bmin, bmax) = ([min[0] - cell, min[1] - cell], [max[0] + cell, max[1] + cell]);
-    // Too little enclosed means the walls leave the building open: use the hull of the walls.
-    if enclosed * 100 < w * h * 20 {
+    // Where a wall is missing (drawn walls often leave out an open side), cells with walls on both
+    // sides of them along their row and along their column are inside the building too.
+    let mut ortho = vec![false; w * h];
+    let mut across_row = vec![false; w * h];
+    for y in 0..h {
+        let hits: Vec<usize> = (0..w).filter(|x| wall[y * w + x]).collect();
+        if let (Some(first), Some(last)) = (hits.first(), hits.last()) {
+            for x in *first..=*last {
+                across_row[y * w + x] = true;
+            }
+        }
+    }
+    for x in 0..w {
+        let hits: Vec<usize> = (0..h).filter(|y| wall[y * w + x]).collect();
+        if let (Some(first), Some(last)) = (hits.first(), hits.last()) {
+            for y in *first..=*last {
+                ortho[y * w + x] = across_row[y * w + x];
+            }
+        }
+    }
+    let placing: Vec<bool> = (0..w * h).map(|i| !outside[i] || ortho[i]).collect();
+    // Coverage counts inside the walls and a buffer around them.
+    let from_placing = distance_within(&placing, w, h, buffer);
+    let inside: Vec<bool> = from_placing.iter().map(|d| (*d as usize) <= buffer).collect();
+    let (bmin, bmax) = ([min[0] - margin as f32 * cell, min[1] - margin as f32 * cell], [max[0] + margin as f32 * cell, max[1] + margin as f32 * cell]);
+    // Too little enclosed means the walls do not make a building: use the hull of the walls.
+    let enclosed = placing.iter().filter(|b| **b).count();
+    if enclosed * 100 < w * h * 8 {
         let mut pts: Vec<[f32; 2]> = mine.iter().flat_map(|w| [w.a, w.b]).collect();
         let hull = convex_hull(&mut pts);
-        return Some(Zone { min: bmin, max: bmax, cell, w, inside: Vec::new(), hull: Some(hull) });
+        return Some(Zone { min: bmin, max: bmax, cell, w, inside: Vec::new(), placing: Vec::new(), hull: Some(hull) });
     }
-    // The zone's own grid starts at `origin`.
-    Some(Zone { min: origin, max: bmax, cell, w, inside, hull: None })
+    Some(Zone { min: origin, max: [origin[0] + w as f32 * cell, origin[1] + h as f32 * cell], cell, w, inside, placing, hull: None })
+}
+
+/// Distance in cells (8-connected) from the nearest `true` cell, counted up to `cap` (cells further
+/// than that read `cap + 1`).
+fn distance_within(sources: &[bool], w: usize, h: usize, cap: usize) -> Vec<u16> {
+    let mut d = vec![(cap + 1) as u16; w * h];
+    let mut frontier: Vec<usize> = (0..w * h).filter(|i| sources[*i]).collect();
+    for &i in &frontier {
+        d[i] = 0;
+    }
+    for step in 1..=cap {
+        let mut next = Vec::new();
+        for &i in &frontier {
+            let (x, y) = ((i % w) as isize, (i / w) as isize);
+            for dy in -1..=1isize {
+                for dx in -1..=1isize {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h && d[ny as usize * w + nx as usize] > step as u16 {
+                        d[ny as usize * w + nx as usize] = step as u16;
+                        next.push(ny as usize * w + nx as usize);
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+    d
 }
 
 /// Convex hull (counter-clockwise) of points.
@@ -462,7 +574,7 @@ mod tests {
     fn access_points_stacked_in_a_corner_spread_out() {
         let mut f = floor(vec![PlannedAp::new("a".into(), 10.0, 10.0), PlannedAp::new("b".into(), 12.0, 12.0)]);
         let before = mean_clamped(&f);
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
+        let moves = optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap().moves;
         assert_eq!(moves.len(), 2);
         for (i, p) in moves {
             f.aps[i].x = p[0];
@@ -480,7 +592,7 @@ mod tests {
         let mut f = floor(vec![PlannedAp::new("a".into(), 20.0, 20.0)]);
         // A thin glass wall down the middle, where the best spot for one AP would be.
         f.walls.push(Wall { height_m: None, ..Wall::new([200.0, 0.0], [200.0, 200.0], Material::Glass) });
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
+        let moves = optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap().moves;
         let [x, y] = moves.first().expect("it moves").1;
         assert!(distance_to_segment([x, y], [200.0, 0.0], [200.0, 200.0]) >= WALL_CLEARANCE_M / 0.1, "{x},{y}");
     }
@@ -506,7 +618,7 @@ mod tests {
     fn access_points_go_inside_the_walls_not_the_page_margins() {
         for gap in [false, true] {
             let mut f = house(gap);
-            for (i, p) in optimise(&f, Band::Ghz5, 1.0).unwrap().moves {
+            for (i, p) in optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap().moves {
                 f.aps[i].x = p[0];
                 f.aps[i].y = p[1];
             }
@@ -529,11 +641,11 @@ mod tests {
         for x in [200.0, 300.0, 400.0, 500.0, 600.0] {
             f.walls.push(w([x, 100.0], [x, 300.0]));
         }
-        let out = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        let out = optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap();
         assert!(out.coverage_after < 0.95, "{}", out.coverage_after);
         assert!(!out.extra.is_empty() && out.coverage_with_extra > out.coverage_after + 0.02, "{out:?}");
         // A small open room needs nothing more.
-        let small = optimise(&house(false), Band::Ghz5, 1.0).unwrap();
+        let small = optimise(&house(false), Band::Ghz5, 1.0, &Goal::default()).unwrap();
         assert!(small.extra.is_empty(), "{small:?}");
     }
 
@@ -552,12 +664,12 @@ mod tests {
     #[test]
     fn a_good_layout_is_left_alone_and_needs_a_scale() {
         let f = floor(vec![PlannedAp::new("a".into(), 200.0, 100.0)]);
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
+        let moves = optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap().moves;
         assert!(moves.is_empty() || moves.len() == 1);
         let mut none = floor(vec![]);
-        assert_eq!(optimise(&none, Band::Ghz5, 1.0), Err(Unavailable::NoAps));
+        assert_eq!(optimise(&none, Band::Ghz5, 1.0, &Goal::default()), Err(Unavailable::NoAps));
         none.metres_per_px = None;
-        assert_eq!(optimise(&none, Band::Ghz5, 1.0), Err(Unavailable::NoScale));
+        assert_eq!(optimise(&none, Band::Ghz5, 1.0, &Goal::default()), Err(Unavailable::NoScale));
     }
 
     /// Try the optimiser on a saved project: `WS_PROJECT=/path/x.wifispanner cargo test --release try_project -- --ignored --nocapture`.
@@ -568,6 +680,24 @@ mod tests {
         let project = crate::survey::Project::from_json(&text).unwrap();
         let f = project.floor();
         println!("walls {} aps {:?}", f.walls.len(), f.aps.iter().map(|a| (a.x as i32, a.y as i32)).collect::<Vec<_>>());
-        println!("{:?}", optimise(f, Band::Ghz5, 1.0));
+        println!("{:?}", optimise(f, Band::Ghz5, 1.0, &Goal::default()));
+    }
+
+    /// Write the zone as text for a look: `WS_PROJECT=... WS_ZONE=/path/zone.txt cargo test --release dump_zone -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dump_zone() {
+        let text = std::fs::read_to_string(std::env::var("WS_PROJECT").unwrap()).unwrap();
+        let project = crate::survey::Project::from_json(&text).unwrap();
+        let f = project.floor();
+        let z = safe_zone(f, f.metres_per_px.unwrap()).unwrap();
+        let mut out = format!("{} {} {} {} {}\n", z.min[0], z.min[1], z.cell, z.w, z.inside.len() / z.w.max(1));
+        for (i, c) in z.inside.iter().enumerate() {
+            out.push(if z.placing.get(i).copied().unwrap_or(false) { '2' } else if *c { '1' } else { '0' });
+            if i % z.w == z.w - 1 {
+                out.push('\n');
+            }
+        }
+        std::fs::write(std::env::var("WS_ZONE").unwrap(), out).unwrap();
     }
 }
