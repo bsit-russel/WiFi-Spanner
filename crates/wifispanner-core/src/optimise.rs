@@ -36,7 +36,7 @@ const MAX_EXTRA: usize = 4;
 /// Roaming: a client should hear a second access point at least this well (dBm) where it leaves the first.
 pub const ROAM_DBM: f32 = -75.0;
 /// How much the second access point's signal counts beside the first's in the score.
-const ROAM_WEIGHT: f32 = 0.3;
+const ROAM_WEIGHT: f32 = 0.1;
 /// An extra access point must add at least this share of the floor to be worth suggesting.
 const WORTH_SHARE: f32 = 0.02;
 
