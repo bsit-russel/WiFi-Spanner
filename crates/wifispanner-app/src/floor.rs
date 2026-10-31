@@ -1060,7 +1060,9 @@ impl FloorTab {
                     ui.horizontal(|ui| {
                         back = theme::button(ui, ButtonKind::Text, Some(ICON_ARROW_BACK), "Projects").clicked();
                         ui.separator();
-                        picked = Self::tool_chips(ui, tool, survey, enabled);
+                        // While selecting, the chip of the kind being selected stays lit as well.
+                        let lit = if tool == Tool::Select { self.select_only.unwrap_or(tool) } else { tool };
+                        picked = Self::tool_chips(ui, lit, survey, enabled);
                     });
                 });
             });
@@ -1604,8 +1606,8 @@ impl FloorTab {
 
     /// Switch tool, dropping whatever the old one had half done.
     fn set_tool(&mut self, tool: Tool) {
-        if tool == Tool::Select && matches!(self.tool, Tool::Walls | Tool::Obstacles | Tool::Aps) {
-            self.select_only = Some(self.tool);
+        if tool == Tool::Select && self.tool != Tool::Select {
+            self.select_only = matches!(self.tool, Tool::Walls | Tool::Obstacles | Tool::Aps).then_some(self.tool);
         }
         self.tool = tool;
         self.wall_start = None;
