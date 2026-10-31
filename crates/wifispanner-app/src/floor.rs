@@ -331,6 +331,8 @@ pub struct FloorTab {
     box_start: Option<Pos2>,
     /// A wall or obstacle area is being dragged (moved), not a box drawn.
     obj_drag: bool,
+    /// The kind of object the Select tool works on: that of the tool it was chosen from (all when none).
+    select_only: Option<Tool>,
     report_dialog: Option<report::OptionsDialog>,
 }
 
@@ -521,6 +523,7 @@ impl Default for FloorTab {
             last_wall_edit: None,
             box_start: None,
             obj_drag: false,
+            select_only: None,
             report_dialog: None,
         }
     }
@@ -1601,6 +1604,9 @@ impl FloorTab {
 
     /// Switch tool, dropping whatever the old one had half done.
     fn set_tool(&mut self, tool: Tool) {
+        if tool == Tool::Select && matches!(self.tool, Tool::Walls | Tool::Obstacles | Tool::Aps) {
+            self.select_only = Some(self.tool);
+        }
         self.tool = tool;
         self.wall_start = None;
         self.area_start = None;
@@ -2606,14 +2612,25 @@ impl FloorTab {
         }
     }
 
+    /// Which kinds (walls, obstacle areas, devices) the Select tool works on.
+    fn select_kinds(&self) -> (bool, bool, bool) {
+        match self.select_only {
+            Some(Tool::Walls) => (true, false, false),
+            Some(Tool::Obstacles) => (false, true, false),
+            Some(Tool::Aps) => (false, false, true),
+            _ => (true, true, true),
+        }
+    }
+
     /// Select walls and obstacle areas by clicking or dragging a box; Shift or Ctrl adds.
     fn select_walls(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, to_screen: &impl Fn(Pos2) -> Pos2) {
+        let (walls_ok, areas_ok, devices_ok) = self.select_kinds();
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         if resp.drag_started_by(egui::PointerButton::Primary) {
             // A box starts only in open space: not on a device, wall or obstacle, which the drag moves instead.
             let origin = ui.input(|i| i.pointer.press_origin());
-            let on_device = origin.is_some_and(|o| floor.layer(self.mode == WorkMode::Plan).iter().any(|a| to_screen(Pos2::new(a.x, a.y)).distance(o) <= AP_PICK_PX));
+            let on_device = devices_ok && origin.is_some_and(|o| floor.layer(self.mode == WorkMode::Plan).iter().any(|a| to_screen(Pos2::new(a.x, a.y)).distance(o) <= AP_PICK_PX));
             self.box_start = if self.obj_drag || on_device { None } else { origin.map(to_plan) };
         }
         if resp.drag_stopped_by(egui::PointerButton::Primary) && self.ap_drag.is_some() {
@@ -2623,11 +2640,15 @@ impl FloorTab {
             && let (Some(a), Some(b)) = (self.box_start.take(), resp.interact_pointer_pos().map(to_plan))
         {
             let (min, max) = ([a.x.min(b.x), a.y.min(b.y)], [a.x.max(b.x), a.y.max(b.y)]);
-            let hit = floor.walls.iter().enumerate().filter(|(_, w)| w.intersects_rect(min, max)).map(|(i, _)| i);
-            let hit_areas = floor.areas.iter().enumerate().filter(|(_, ar)| ar.intersects_rect(min, max)).map(|(i, _)| i);
+            let hit = floor.walls.iter().enumerate().filter(|(_, w)| walls_ok && w.intersects_rect(min, max)).map(|(i, _)| i);
+            let hit_areas = floor.areas.iter().enumerate().filter(|(_, ar)| areas_ok && ar.intersects_rect(min, max)).map(|(i, _)| i);
             if !additive {
-                self.selected_walls.clear();
-                self.selected_areas.clear();
+                if walls_ok {
+                    self.selected_walls.clear();
+                }
+                if areas_ok {
+                    self.selected_areas.clear();
+                }
             }
             self.selected_walls.extend(hit);
             self.selected_areas.extend(hit_areas);
@@ -2640,14 +2661,18 @@ impl FloorTab {
                 .iter()
                 .enumerate()
                 .map(|(i, w)| (i, w.distance_to([p.x, p.y])))
-                .filter(|(_, d)| *d <= radius)
+                .filter(|(_, d)| walls_ok && *d <= radius)
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(i, _)| i);
             // With no wall under the click, an area under it is picked (the last drawn is on top).
-            let area = if nearest.is_none() { floor.areas.iter().rposition(|a| a.contains([p.x, p.y])) } else { None };
+            let area = if nearest.is_none() && areas_ok { floor.areas.iter().rposition(|a| a.contains([p.x, p.y])) } else { None };
             if !additive {
-                self.selected_walls.clear();
-                self.selected_areas.clear();
+                if walls_ok {
+                    self.selected_walls.clear();
+                }
+                if areas_ok {
+                    self.selected_areas.clear();
+                }
             }
             if let Some(i) = nearest {
                 if additive && self.selected_walls.contains(&i) {
@@ -3256,9 +3281,12 @@ impl FloorTab {
                     self.wall_click(plan, zoom);
                 }
             } else {
-                self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, true, true, true);
+                let (walls_ok, areas_ok, devices_ok) = self.select_kinds();
+                self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, walls_ok, areas_ok, devices_ok);
                 self.select_walls(&resp, ui, zoom, &to_plan, &to_screen);
-                self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
+                if devices_ok {
+                    self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
+                }
                 if escape {
                     self.selected_walls.clear();
                     self.selected_areas.clear();
@@ -3266,8 +3294,9 @@ impl FloorTab {
                 if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
                     && let Some(p) = &self.project
                 {
-                    self.selected_walls = (0..p.floor().walls.len()).collect();
-                    self.selected_areas = (0..p.floor().areas.len()).collect();
+                    let (walls_ok, areas_ok, _) = self.select_kinds();
+                    self.selected_walls = if walls_ok { (0..p.floor().walls.len()).collect() } else { Default::default() };
+                    self.selected_areas = if areas_ok { (0..p.floor().areas.len()).collect() } else { Default::default() };
                 }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
