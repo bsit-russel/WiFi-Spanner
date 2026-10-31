@@ -1610,6 +1610,9 @@ impl FloorTab {
             self.select_only = matches!(self.tool, Tool::Walls | Tool::Obstacles | Tool::Aps).then_some(self.tool);
         }
         self.tool = tool;
+        if !matches!(tool, Tool::Aps | Tool::Select) {
+            self.devices_open = false;
+        }
         self.wall_start = None;
         self.area_start = None;
         self.poly_points.clear();
@@ -3161,7 +3164,7 @@ impl FloorTab {
     /// The button under the floors button that opens the Add Devices menu.
     fn devices_button(&mut self, ctx: &egui::Context, canvas: Rect) {
         let r = theme::roles(ctx);
-        let open = self.devices_open;
+        let open = self.devices_open && (self.tool == Tool::Aps || (self.tool == Tool::Select && self.select_only == Some(Tool::Aps)));
         let mut toggled = false;
         egui::Area::new(egui::Id::unique("devices_button"))
             .order(egui::Order::Foreground)
