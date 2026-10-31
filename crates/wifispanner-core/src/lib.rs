@@ -7,6 +7,7 @@
 //! material table. The prediction engine arrives in a later phase.
 
 pub mod catalog;
+pub mod channels;
 pub mod floors;
 pub mod heatmap;
 pub mod obstacles;

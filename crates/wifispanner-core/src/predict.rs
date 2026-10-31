@@ -57,6 +57,13 @@ pub struct Radio {
     pub eirp_cap_dbm: Option<f32>,
 }
 
+/// The channel an access point should use on one of its bands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Channel {
+    pub band: RadioBand,
+    pub number: u32,
+}
+
 /// An access point on the plan: one that is really there, or one being planned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedAp {
@@ -92,6 +99,9 @@ pub struct PlannedAp {
     /// For a plan access point standing for an installed one: that one's `id`.
     #[serde(default)]
     pub from: Option<u64>,
+    /// The channels recommended for it, one per band, once a channel plan has been made.
+    #[serde(default)]
+    pub channels: Vec<Channel>,
 }
 
 impl PlannedAp {
@@ -114,6 +124,7 @@ impl PlannedAp {
             link: None,
             id: 0,
             from: None,
+            channels: Vec::new(),
         }
     }
 

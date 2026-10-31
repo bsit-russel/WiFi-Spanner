@@ -85,6 +85,34 @@ const WALL_CARVE_PX: f32 = 8.0;
 struct Optimised {
     manual: Vec<(u64, [f32; 2])>,
     placed: Vec<(u64, [f32; 2])>,
+    /// Access points added on the optimiser's suggestion.
+    added: Vec<u64>,
+}
+
+/// What the optimiser reports, shown until dismissed: coverage, roaming, more access points it
+/// recommends (waiting for a yes or no) and the channel plan.
+struct Suggestion {
+    extra: Vec<[f32; 2]>,
+    template_id: u64,
+    after: f32,
+    with_extra: f32,
+    roaming: f32,
+}
+
+/// Give every enabled access point its recommended channels.
+fn apply_channel_plan(floor: &mut Floor) {
+    for (i, channels) in wifispanner_core::channels::plan(floor) {
+        floor.aps[i].channels = channels;
+    }
+}
+
+fn planning_channels(mode: WorkMode) -> bool {
+    mode == WorkMode::Plan
+}
+
+/// Whether the optimiser moved any access point.
+fn placed_any(out: &wifispanner_core::optimise::Outcome) -> bool {
+    !out.moves.is_empty()
 }
 
 /// How long the optimise button is held to restore the survey positions.
@@ -234,7 +262,8 @@ pub struct FloorTab {
     /// The Add Devices menu is showing (it sits behind its own button).
     devices_open: bool,
     /// The optimiser: running on a thread, and (once applied) where the access points stood before and where it put them.
-    optimising: Option<Receiver<Result<Vec<(usize, [f32; 2])>, String>>>,
+    optimising: Option<Receiver<Result<wifispanner_core::optimise::Outcome, String>>>,
+    suggestion: Option<Suggestion>,
     optimised: Option<Optimised>,
     /// When the optimise button was pressed down, and whether that press already did its long-press job.
     optimise_hold: Option<(std::time::Instant, bool)>,
@@ -431,6 +460,7 @@ impl Default for FloorTab {
             floors_open: false,
             devices_open: false,
             optimising: None,
+            suggestion: None,
             optimised: None,
             optimise_hold: None,
             autoscale_rx: None,
@@ -2167,6 +2197,11 @@ impl FloorTab {
                 edits.push(ApEdit::Name(name));
             }
         }
+        if planning_channels(self.mode) && picked.len() == 1 && !first.channels.is_empty() {
+            let text = first.channels.iter().map(|c| format!("{} {}", c.band.band(), c.number)).collect::<Vec<_>>().join("   ");
+            ui.label(egui::RichText::new(format!("Channels: {text}")).text_style(egui::TextStyle::Body).color(r.on_surface_variant))
+                .on_hover_text("From the optimiser's channel plan. Move or add access points and optimise again to refresh it.");
+        }
         // While surveying an access point is only plotted: where it is, what it is called, and
         // which measured one it is. Its model, power and height are for Planning.
         let planning = self.mode == WorkMode::Plan;
@@ -2705,35 +2740,130 @@ impl FloorTab {
         let Ok(result) = chan.try_recv() else { return };
         self.optimising = None;
         let Some(fl) = self.project.as_mut().map(|p| p.floor_mut()) else { return };
+        let template_id = fl.aps.get(match &result { Ok(o) => o.template, Err(_) => 0 }).map_or(0, |a| a.id);
         match result {
             Err(why) => self.status = why,
-            Ok(moves) if moves.is_empty() => self.status = "The access points are already well placed.".into(),
-            Ok(moves) => {
+            Ok(out) => {
+                let percent = |v: f32| (v * 100.0).round() as i32;
                 let mut manual = Vec::new();
                 let mut placed = Vec::new();
-                for (i, [x, y]) in moves {
+                for (i, [x, y]) in out.moves.iter().copied() {
                     if let Some(a) = fl.aps.get_mut(i) {
                         manual.push((a.id, [a.x, a.y]));
                         (a.x, a.y) = (x, y);
                         placed.push((a.id, [x, y]));
                     }
                 }
-                self.optimised = Some(Optimised { manual, placed });
-                self.status = "Access points moved for the best coverage. Click the button again to put them back.".into();
-                self.pred_dirty = true;
-                self.autosave();
+                // The channel plan goes with the new layout.
+                apply_channel_plan(fl);
+                if !placed.is_empty() {
+                    self.optimised = Some(Optimised { manual, placed, added: Vec::new() });
+                    self.pred_dirty = true;
+                    self.autosave();
+                }
+                let covered = format!("{}% of the floor has a good signal ({} dBm or better)", percent(out.coverage_after), wifispanner_core::optimise::GOOD_DBM);
+                self.status = match (placed_any(&out), out.extra.is_empty()) {
+                    (true, true) => format!("Access points moved for the best coverage: {covered}. Click the button again to put them back."),
+                    (false, true) => format!("The access points are already well placed: {covered}."),
+                    (moved, false) => format!("{}{covered}. More access points are recommended.", if moved { "Access points moved. Now " } else { "" }),
+                };
+                // The report stays up until dismissed.
+                self.suggestion = Some(Suggestion { extra: out.extra, template_id, after: out.coverage_after, with_extra: out.coverage_with_extra, roaming: out.roaming_after });
             }
+        }
+    }
+
+    /// The optimiser's report: coverage, roaming, more access points to add, and the channel plan.
+    fn suggestion_dialog(&mut self, ctx: &egui::Context) {
+        let Some(s) = &self.suggestion else { return };
+        let n = s.extra.len();
+        let (mut add, mut close) = (false, false);
+        let percent = |v: f32| (v * 100.0).round() as i32;
+        let rows: Vec<(String, Vec<wifispanner_core::predict::Channel>)> = self
+            .project
+            .as_ref()
+            .map(|p| p.floor().aps.iter().filter(|a| a.enabled).map(|a| (a.name.clone(), a.channels.clone())).collect())
+            .unwrap_or_default();
+        let r = theme::roles(ctx);
+        theme::dialog(ctx, "Access point plan", 520.0, |ui| {
+            ui.label(format!("{}% of the floor has a good signal ({} dBm or better).", percent(s.after), wifispanner_core::optimise::GOOD_DBM));
+            let roam = percent(s.roaming);
+            ui.label(egui::RichText::new(format!(
+                "{roam}% of the floor also hears a second access point at {} dBm or better, so there is room to roam.",
+                wifispanner_core::optimise::ROAM_DBM
+            )).color(if roam < 50 { r.error } else { r.on_surface_variant }));
+            if n > 0 {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!("{n} more access point{} recommended", if n == 1 { "" } else { "s" })).strong());
+                ui.label(format!("Adding {} would raise the good signal to {}% of the floor. The new one{} copy{} the strongest access point and go where {} help most.", if n == 1 { "it" } else { "them" }, percent(s.with_extra), if n == 1 { "" } else { "s" }, if n == 1 { "ies" } else { "" }, if n == 1 { "it" } else { "they" }));
+            }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Channel plan").strong());
+            ui.weak("Neighbouring access points are on different channels to avoid interference, and overlap enough to roam. 2.4 GHz at 20 MHz, 5 GHz at 40 MHz.");
+            let bands: Vec<wifispanner_core::predict::RadioBand> = wifispanner_core::predict::RadioBand::ALL.into_iter().filter(|b| rows.iter().any(|r| r.1.iter().any(|c| c.band == *b))).collect();
+            let names: Vec<String> = std::iter::once("Access point".to_string()).chain(bands.iter().map(|b| b.band().to_string())).collect();
+            let header: Vec<&str> = names.iter().map(String::as_str).collect();
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                theme::data_table(ui, "channel_plan", &header, 24.0, |ui| {
+                    for (name, chans) in &rows {
+                        theme::cell(ui, |ui| ui.label(name));
+                        for b in &bands {
+                            theme::cell(ui, |ui| ui.label(chans.iter().find(|c| c.band == *b).map_or("-".to_string(), |c| c.number.to_string())));
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            theme::actions(ui, |ui| {
+                if n > 0 && theme::button(ui, ButtonKind::Filled, Some(ICON_ADD), &format!("Add {n}")).clicked() {
+                    add = true;
+                }
+                if theme::button(ui, if n > 0 { ButtonKind::Text } else { ButtonKind::Filled }, None, if n > 0 { "Not now" } else { "Done" }).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if add && let Some(s) = self.suggestion.as_mut() {
+            let (extra, template_id) = (std::mem::take(&mut s.extra), s.template_id);
+            s.after = s.with_extra;
+            if let Some(fl) = self.project.as_mut().map(|p| p.floor_mut()) {
+                let template = fl.aps.iter().find(|a| a.id == template_id).cloned();
+                let mut ids = Vec::new();
+                for [x, y] in extra {
+                    let mut ap = template.clone().unwrap_or_else(|| PlannedAp::new(String::new(), 0.0, 0.0));
+                    ap.name = format!("AP {}", fl.aps.len() + 1);
+                    (ap.x, ap.y) = (x, y);
+                    ap.id = fl.next_ap_id();
+                    (ap.existing, ap.from, ap.link, ap.enabled) = (false, None, None, true);
+                    ap.channels.clear();
+                    ids.push(ap.id);
+                    fl.aps.push(ap);
+                }
+                apply_channel_plan(fl);
+                let o = self.optimised.get_or_insert(Optimised { manual: Vec::new(), placed: Vec::new(), added: Vec::new() });
+                o.added.extend(ids);
+            }
+            self.status = "Access points added. Click the optimise button again to take them back out.".into();
+            self.pred_dirty = true;
+            self.autosave();
+        } else if close {
+            self.suggestion = None;
+            self.autosave();
         }
     }
 
     /// Back to where the access points stood before the optimiser.
     fn undo_optimise(&mut self) {
         let (Some(o), Some(fl)) = (self.optimised.take(), self.project.as_mut().map(|p| p.floor_mut())) else { return };
+        fl.aps.retain(|a| !o.added.contains(&a.id));
+        self.aps_selected.clear();
+        // (the channel plan is redone below, once the access points are back in place)
         for (id, [x, y]) in o.manual {
             if let Some(a) = fl.aps.iter_mut().find(|a| a.id == id) {
                 (a.x, a.y) = (x, y);
             }
         }
+        apply_channel_plan(self.project.as_mut().map(|p| p.floor_mut()).expect("a project is open"));
         self.status = "Access points put back where you had them.".into();
         self.pred_dirty = true;
         self.autosave();
@@ -2759,6 +2889,7 @@ impl FloorTab {
     /// The button under the devices button: a click optimises or undoes, a long press restores the survey.
     fn optimise_button(&mut self, ctx: &egui::Context, canvas: Rect) {
         self.optimise_tick();
+        self.suggestion_dialog(ctx);
         // A hand edit of an optimised access point makes the layout the user's own again.
         if let (Some(o), Some(fl)) = (&self.optimised, self.project.as_ref().map(|p| p.floor())) {
             if o.placed.iter().any(|(id, [x, y])| fl.aps.iter().find(|a| a.id == *id).is_none_or(|a| (a.x, a.y) != (*x, *y))) {

@@ -27,10 +27,40 @@ const MAX_PASSES: usize = 8;
 /// Access points keep at least this far (metres) from a wall.
 const WALL_CLEARANCE_M: f32 = 0.5;
 
+/// A signal this strong (dBm) or better counts as good coverage.
+pub const GOOD_DBM: f32 = -67.0;
+/// Enough coverage that no more access points are suggested: the share of the floor with a good signal.
+const ENOUGH_SHARE: f32 = 0.95;
+/// Never suggest more than this many extra access points.
+const MAX_EXTRA: usize = 4;
+/// Roaming: a client should hear a second access point at least this well (dBm) where it leaves the first.
+pub const ROAM_DBM: f32 = -75.0;
+/// How much the second access point's signal counts beside the first's in the score.
+const ROAM_WEIGHT: f32 = 0.3;
+/// An extra access point must add at least this share of the floor to be worth suggesting.
+const WORTH_SHARE: f32 = 0.02;
+
+/// What the optimiser found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outcome {
+    /// New positions for access points that should move, as `(index in floor.aps, [x, y])`.
+    pub moves: Vec<(usize, [f32; 2])>,
+    /// The share of the floor (0 to 1) with a good signal before and after those moves.
+    pub coverage_before: f32,
+    pub coverage_after: f32,
+    /// Where more access points would help, with the coverage they would reach, when the floor is not covered well enough.
+    pub extra: Vec<[f32; 2]>,
+    pub coverage_with_extra: f32,
+    /// The share of the floor where a second access point is heard at `ROAM_DBM` or better, after the moves: room to roam.
+    pub roaming_after: f32,
+    /// The access point (index in `floor.aps`) the extra ones should be copies of: the strongest.
+    pub template: usize,
+}
+
 /// New positions (plan pixels) for the enabled access points of `floor.aps` that have a radio on
 /// `band`, as `(index in floor.aps, [x, y])`. Only those that move are listed; an empty list
 /// means the plan is already as good as it gets.
-pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usize, [f32; 2])>, Unavailable> {
+pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Outcome, Unavailable> {
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0).ok_or(Unavailable::NoScale)?;
     let movers: Vec<(usize, &PlannedAp, f32)> = floor
         .aps
@@ -89,16 +119,27 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
     });
 
     let score = |best: &[f32]| best.iter().map(|b| b.clamp(FLOOR_DBM, TARGET_DBM)).sum::<f32>() / best.len() as f32;
-    let best_of = |placed: &[Option<usize>], skip: Option<usize>| -> Vec<f32> {
-        let mut best = vec![FLOOR_DBM; samples.len()];
+    // The strongest and second-strongest signal at every sample for some placement.
+    let top2_of = |placed: &[Option<usize>], skip: Option<usize>| -> (Vec<f32>, Vec<f32>) {
+        let (mut best, mut second) = (vec![FLOOR_DBM; samples.len()], vec![FLOOR_DBM; samples.len()]);
         for (m, spot) in placed.iter().enumerate() {
             if let (Some(spot), true) = (spot, Some(m) != skip) {
-                for (b, s) in best.iter_mut().zip(&signals[m][*spot]) {
-                    *b = b.max(*s);
+                for ((b, s2), s) in best.iter_mut().zip(second.iter_mut()).zip(&signals[m][*spot]) {
+                    if *s > *b {
+                        (*s2, *b) = (*b, *s);
+                    } else if *s > *s2 {
+                        *s2 = *s;
+                    }
                 }
             }
         }
-        best
+        (best, second)
+    };
+    let roam_score = |second: &[f32]| second.iter().map(|b| b.clamp(FLOOR_DBM, ROAM_DBM)).sum::<f32>() / second.len() as f32;
+    let total = |best: &[f32], second: &[f32]| score(best) + ROAM_WEIGHT * roam_score(second);
+    let total_of = |placed: &[Option<usize>]| {
+        let (b, s) = top2_of(placed, None);
+        total(&b, &s)
     };
     // Where they stand now, for comparison.
     let current: Vec<f32> = {
@@ -111,13 +152,38 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
         best
     };
 
+    let current_second: Vec<f32> = {
+        let mut best = vec![FLOOR_DBM; samples.len()];
+        let mut second = vec![FLOOR_DBM; samples.len()];
+        for (_, ap, eirp) in &movers {
+            for ((b, s2), p) in best.iter_mut().zip(second.iter_mut()).zip(&samples) {
+                let s = at(ap, *eirp, [ap.x, ap.y], *p);
+                if s > *b {
+                    (*s2, *b) = (*b, s);
+                } else if s > *s2 {
+                    *s2 = s;
+                }
+            }
+        }
+        second
+    };
     // Strongest first, each where it adds the most; then each moved in turn while that helps.
     let mut order: Vec<usize> = (0..movers.len()).collect();
     order.sort_by(|a, b| movers[*b].2.total_cmp(&movers[*a].2));
     let choose = |placed: &[Option<usize>], m: usize| -> usize {
-        let others = best_of(placed, Some(m));
+        let (b1, b2) = top2_of(placed, Some(m));
         (0..spots.len())
-            .map(|c| (c, score(&others.iter().zip(&signals[m][c]).map(|(o, s)| o.max(*s)).collect::<Vec<_>>())))
+            .map(|c| {
+                let (mut first, mut second) = (b1.clone(), b2.clone());
+                for ((f, s2), s) in first.iter_mut().zip(second.iter_mut()).zip(&signals[m][c]) {
+                    if *s > *f {
+                        (*s2, *f) = (*f, *s);
+                    } else if *s > *s2 {
+                        *s2 = *s;
+                    }
+                }
+                (c, total(&first, &second))
+            })
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map_or(0, |(c, _)| c)
     };
@@ -132,10 +198,10 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
             for &m in &order {
                 let was = placed[m];
                 let now = Some(choose(&placed, m));
-                let (a, b) = (score(&best_of(&placed, None)), {
+                let (a, b) = (total_of(&placed), {
                     let mut t = placed.clone();
                     t[m] = now;
-                    score(&best_of(&t, None))
+                    total_of(&t)
                 });
                 if now != was && b > a + 1e-4 {
                     placed[m] = now;
@@ -152,13 +218,39 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
     let nearest = |p: [f32; 2]| (0..spots.len()).min_by(|a, b| dist2(spots[*a], p).total_cmp(&dist2(spots[*b], p)));
     let from_scratch = ascend(vec![None; movers.len()]);
     let from_here = ascend(movers.iter().map(|(_, ap, _)| nearest([ap.x, ap.y])).collect());
-    let placed = if score(&best_of(&from_here, None)) >= score(&best_of(&from_scratch, None)) { from_here } else { from_scratch };
+    let placed = if total_of(&from_here) >= total_of(&from_scratch) { from_here } else { from_scratch };
     // Keep what is there unless the search found something clearly better, or something stands outside the walls.
     let outside = zone.as_ref().is_some_and(|z| movers.iter().any(|(_, ap, _)| !z.contains([ap.x, ap.y])));
-    if !outside && score(&best_of(&placed, None)) <= score(&current) + 0.05 {
-        return Ok(Vec::new());
+    let share_at = |v: &[f32], limit: f32| v.iter().filter(|b| **b >= limit).count() as f32 / v.len().max(1) as f32;
+    let share = |best: &[f32]| share_at(best, GOOD_DBM);
+    let keep = !outside && total_of(&placed) <= total(&current, &current_second) + 0.05;
+    let (moves, after, after_second): (Vec<(usize, [f32; 2])>, Vec<f32>, Vec<f32>) = if keep {
+        (Vec::new(), current.clone(), current_second.clone())
+    } else {
+        let (b, s) = top2_of(&placed, None);
+        (movers.iter().zip(&placed).filter_map(|((i, _, _), spot)| spot.map(|s| (*i, spots[s]))).collect(), b, s)
+    };
+    // If the floor is still not well covered, where would more access points like the strongest one go?
+    let template = order[0];
+    let mut best = after.clone();
+    let (coverage_after, mut with_extra) = (share(&after), share(&after));
+    let mut extra = Vec::new();
+    while coverage_after < ENOUGH_SHARE && with_extra < ENOUGH_SHARE && extra.len() < MAX_EXTRA {
+        let Some(c) = (0..spots.len()).max_by(|a, b| {
+            let s = |c: usize| score(&best.iter().zip(&signals[template][c]).map(|(o, s)| o.max(*s)).collect::<Vec<_>>());
+            s(*a).total_cmp(&s(*b))
+        }) else {
+            break;
+        };
+        let next: Vec<f32> = best.iter().zip(&signals[template][c]).map(|(o, s)| o.max(*s)).collect();
+        if share(&next) < with_extra + WORTH_SHARE {
+            break;
+        }
+        extra.push(spots[c]);
+        with_extra = share(&next);
+        best = next;
     }
-    Ok(movers.iter().zip(&placed).filter_map(|((i, _, _), spot)| spot.map(|s| (*i, spots[s]))).collect())
+    Ok(Outcome { moves, coverage_before: share(&current), coverage_after, extra, coverage_with_extra: with_extra, roaming_after: share_at(&after_second, ROAM_DBM), template: movers[template].0 })
 }
 
 /// Where access points may be placed and coverage counts: the area the walls enclose, with a
@@ -226,9 +318,11 @@ fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
     for i in 0..walls.len() {
         *length.entry(root(&mut group, i)).or_insert(0.0f32) += walls[i].length_px();
     }
-    let main = length.iter().max_by(|a, b| a.1.total_cmp(b.1))?.0;
-    let main = *main;
-    let mine: Vec<&crate::walls::Wall> = (0..walls.len()).filter(|&i| root(&mut group, i) == main).map(|i| &walls[i]).collect();
+    // The building is its longest group of walls, and any other group of real size (a garage or an
+    // annexe standing a little apart); small groups elsewhere on the page are not the building.
+    let longest = length.values().copied().fold(0.0f32, f32::max);
+    let keep: Vec<usize> = length.iter().filter(|(_, l)| **l >= longest * 0.15).map(|(r, _)| *r).collect();
+    let mine: Vec<&crate::walls::Wall> = (0..walls.len()).filter(|&i| keep.contains(&root(&mut group, i))).map(|i| &walls[i]).collect();
     if mine.len() < 4 {
         return None;
     }
@@ -368,7 +462,7 @@ mod tests {
     fn access_points_stacked_in_a_corner_spread_out() {
         let mut f = floor(vec![PlannedAp::new("a".into(), 10.0, 10.0), PlannedAp::new("b".into(), 12.0, 12.0)]);
         let before = mean_clamped(&f);
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
         assert_eq!(moves.len(), 2);
         for (i, p) in moves {
             f.aps[i].x = p[0];
@@ -386,7 +480,7 @@ mod tests {
         let mut f = floor(vec![PlannedAp::new("a".into(), 20.0, 20.0)]);
         // A thin glass wall down the middle, where the best spot for one AP would be.
         f.walls.push(Wall { height_m: None, ..Wall::new([200.0, 0.0], [200.0, 200.0], Material::Glass) });
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
         let [x, y] = moves.first().expect("it moves").1;
         assert!(distance_to_segment([x, y], [200.0, 0.0], [200.0, 200.0]) >= WALL_CLEARANCE_M / 0.1, "{x},{y}");
     }
@@ -412,7 +506,7 @@ mod tests {
     fn access_points_go_inside_the_walls_not_the_page_margins() {
         for gap in [false, true] {
             let mut f = house(gap);
-            for (i, p) in optimise(&f, Band::Ghz5, 1.0).unwrap() {
+            for (i, p) in optimise(&f, Band::Ghz5, 1.0).unwrap().moves {
                 f.aps[i].x = p[0];
                 f.aps[i].y = p[1];
             }
@@ -423,9 +517,42 @@ mod tests {
     }
 
     #[test]
+    fn a_house_one_access_point_cannot_cover_gets_more_suggested() {
+        use crate::walls::Wall;
+        use crate::Material;
+        // A 60 x 20 m building with a concrete wall every 10 m: one access point cannot serve it.
+        let mut f = floor(vec![PlannedAp::new("a".into(), 300.0, 100.0)]);
+        f.width_px = 800;
+        f.height_px = 400;
+        let w = |a: [f32; 2], b: [f32; 2]| Wall { height_m: None, ..Wall::new(a, b, Material::Concrete) };
+        f.walls = vec![w([100.0, 100.0], [700.0, 100.0]), w([100.0, 300.0], [700.0, 300.0]), w([100.0, 100.0], [100.0, 300.0]), w([700.0, 100.0], [700.0, 300.0])];
+        for x in [200.0, 300.0, 400.0, 500.0, 600.0] {
+            f.walls.push(w([x, 100.0], [x, 300.0]));
+        }
+        let out = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        assert!(out.coverage_after < 0.95, "{}", out.coverage_after);
+        assert!(!out.extra.is_empty() && out.coverage_with_extra > out.coverage_after + 0.02, "{out:?}");
+        // A small open room needs nothing more.
+        let small = optimise(&house(false), Band::Ghz5, 1.0).unwrap();
+        assert!(small.extra.is_empty(), "{small:?}");
+    }
+
+    #[test]
+    fn a_detached_garage_group_of_walls_is_part_of_the_zone() {
+        use crate::walls::Wall;
+        use crate::Material;
+        let mut f = house(false);
+        let w = |a: [f32; 2], b: [f32; 2]| Wall { height_m: None, ..Wall::new(a, b, Material::Concrete) };
+        // A garage 4 m to the left of the house, not touching it.
+        f.walls.extend([w([60.0, 150.0], [160.0, 150.0]), w([60.0, 350.0], [160.0, 350.0]), w([60.0, 150.0], [60.0, 350.0]), w([160.0, 150.0], [160.0, 350.0])]);
+        let zone = safe_zone(&f, 0.1).unwrap();
+        assert!(zone.contains([100.0, 250.0]) && zone.contains([400.0, 250.0]));
+    }
+
+    #[test]
     fn a_good_layout_is_left_alone_and_needs_a_scale() {
         let f = floor(vec![PlannedAp::new("a".into(), 200.0, 100.0)]);
-        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap().moves;
         assert!(moves.is_empty() || moves.len() == 1);
         let mut none = floor(vec![]);
         assert_eq!(optimise(&none, Band::Ghz5, 1.0), Err(Unavailable::NoAps));
@@ -441,6 +568,6 @@ mod tests {
         let project = crate::survey::Project::from_json(&text).unwrap();
         let f = project.floor();
         println!("walls {} aps {:?}", f.walls.len(), f.aps.iter().map(|a| (a.x as i32, a.y as i32)).collect::<Vec<_>>());
-        println!("{:?}", optimise(f, Band::Ghz5, 1.0).map(|m| m.iter().map(|(i, p)| (*i, p[0] as i32, p[1] as i32)).collect::<Vec<_>>()));
+        println!("{:?}", optimise(f, Band::Ghz5, 1.0));
     }
 }
