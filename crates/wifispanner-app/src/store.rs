@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! Where projects and their reports live on disk, and small file helpers.
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! WiFi Spanner desktop app: a live network analyser and a floor plan survey.
 
@@ -50,7 +50,7 @@ const MAIN_SIZE: [f32; 2] = [1200.0, 700.0];
 const RESIZE_DELAY: Duration = Duration::from_millis(500);
 const SPLASH_MIN: Duration = Duration::from_millis(1800);
 /// The project page, shown in About as the attribution link.
-const REPO_URL: &str = "https://github.com/rubble-za/WiFi-Spanner";
+const REPO_URL: &str = "https://github.com/bsit-russel/WiFi-Spanner";
 const TAGLINE: &str = "Your one-stop WiFi Scanner and Planner";
 
 /// How long a snackbar message stays.
@@ -814,7 +814,7 @@ impl App {
                 ui.label(TAGLINE);
                 ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
                 ui.add_space(6.0);
-                ui.label("Copyright (C) 2026 rubble-za");
+                ui.label("Copyright (C) 2026 Byte Size IT");
                 ui.hyperlink_to(REPO_URL, REPO_URL);
                 ui.add_space(6.0);
                 ui.weak(

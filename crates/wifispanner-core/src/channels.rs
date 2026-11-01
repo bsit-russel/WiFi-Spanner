@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! A channel plan: which channel each access point should use on each band.
 //!

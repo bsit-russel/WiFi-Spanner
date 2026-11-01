@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! Checking GitHub for a newer release.
 //!
@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "rubble-za/WiFi-Spanner";
+const REPO: &str = "bsit-russel/WiFi-Spanner";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {

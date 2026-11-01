@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! Two looks for the same layouts: Material Design 3 (colour roles generated from
 //! a seed colour, pills, tonal buttons) and IBM's Carbon (flat, square, IBM Plex).

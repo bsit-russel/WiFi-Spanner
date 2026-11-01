@@ -54,13 +54,13 @@ every push to `main`.
 
 ## Licence
 
-Copyright (C) 2026 rubble-za.
+Copyright (C) 2026 Byte Size IT.
 
 WiFi Spanner is free software under the
 [GNU General Public License, version 3 or later](LICENSE), with additional
 attribution terms under section 7 (see [NOTICE](NOTICE)): copies and
 derivative works must keep the copyright notice and show "Based on WiFi
-Spanner by rubble-za" with a link to this repository, and modified versions
+Spanner by Byte Size IT" with a link to this repository, and modified versions
 must carry a different name and logo.
 
 Third-party libraries, fonts and data files keep their own licences, listed in

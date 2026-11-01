@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! Desktop integration for the AppImage: a launcher entry and icon in the
 //! user's home folder, so the desktop shows the WiFi Spanner icon in the

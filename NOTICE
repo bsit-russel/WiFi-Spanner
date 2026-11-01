@@ -1,6 +1,6 @@
 WiFi Spanner
-Copyright (C) 2026 rubble-za
-https://github.com/rubble-za/WiFi-Spanner
+Copyright (C) 2026 Byte Size IT
+https://github.com/bsit-russel/WiFi-Spanner
 
 WiFi Spanner is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -25,9 +25,9 @@ cannot be stripped as "further restrictions".
    on WiFi Spanner that has an interactive user interface must show, in its
    About dialog or an equivalent notice, the sentence
 
-       Based on WiFi Spanner by rubble-za
+       Based on WiFi Spanner by Byte Size IT
 
-   together with a link to https://github.com/rubble-za/WiFi-Spanner, in
+   together with a link to https://github.com/bsit-russel/WiFi-Spanner, in
    addition to its own notices.
 
 2. Modified versions (GPL section 7(c)).

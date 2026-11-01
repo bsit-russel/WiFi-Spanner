@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+// Copyright (C) 2026 Byte Size IT. See the LICENSE and NOTICE files.
 
 //! Predicted coverage from planned access points and the walls drawn on a
 //! floor: free-space loss at one metre, a path-loss exponent beyond that, and
