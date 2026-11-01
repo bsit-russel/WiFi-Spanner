@@ -451,6 +451,9 @@ enum WallEdit {
     Delete,
 }
 
+/// The footnote on everything the optimiser shows.
+const OPTIMISER_NOTE: &str = "Experimental feature: the optimiser's suggestions are a guide, not a guarantee. Check them against a real survey.";
+
 /// The width of the menus the side buttons open: 60 % of the optimiser's menu, which is 400 wide
 /// (470 in Carbon). What does not fit across stacks downwards instead.
 fn panel_width(ctx: &egui::Context) -> f32 {
@@ -2192,6 +2195,7 @@ impl FloorTab {
                 edits.push(WallEdit::ZoneCancel);
             }
         });
+        ui.label(egui::RichText::new(OPTIMISER_NOTE).text_style(egui::TextStyle::Small).color(r.on_surface_variant));
     }
 
     /// Back to the tool in use before the area was painted.
@@ -3142,6 +3146,8 @@ impl FloorTab {
                     }
                 });
             });
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(OPTIMISER_NOTE).text_style(egui::TextStyle::Small).color(theme::roles(ui.ctx()).on_surface_variant));
             theme::actions(ui, |ui| {
                 if n > 0 && theme::button(ui, ButtonKind::Filled, Some(ICON_ADD), &format!("Add {n}")).clicked() {
                     add = true;

@@ -80,7 +80,7 @@ const POOL_LIMIT: usize = 6;
 
 /// The channels to choose from on a band, and a note when the settings leave none (the plan then
 /// uses the next narrower width that has some).
-fn pool(band: RadioBand, o: &PlanOptions) -> (Vec<u32>, u32, Option<String>) {
+fn pool(band: RadioBand, o: &PlanOptions, need: usize) -> (Vec<u32>, u32, Option<String>) {
     let mut width = o.width(band);
     let mut note = None;
     loop {
@@ -89,11 +89,15 @@ fn pool(band: RadioBand, o: &PlanOptions) -> (Vec<u32>, u32, Option<String>) {
             RadioBand::Ghz5 => pool_5(width, o.allow_dfs),
             RadioBand::Ghz6 => pool_6(width),
         };
-        if !list.is_empty() || width <= 20 {
+        if list.len() >= need.max(1) || width <= 20 {
             let list: Vec<u32> = list.into_iter().take(POOL_LIMIT).collect();
             return (list, width, note);
         }
-        note = Some(format!("{} MHz channels on {} need DFS (radar-checked) channels, which are not allowed: planned at {} MHz instead.", o.width(band), band.band(), width / 2));
+        note = Some(if list.is_empty() {
+            format!("{} MHz channels on {} need DFS (radar-checked) channels, which are not allowed: planned at {} MHz instead.", o.width(band), band.band(), width / 2)
+        } else {
+            format!("{} MHz channels on {} leave too few channels for every access point to have its own: planned at {} MHz instead.", o.width(band), band.band(), width / 2)
+        });
         width /= 2;
     }
 }
@@ -119,7 +123,8 @@ pub fn plan(floor: &Floor, options: &PlanOptions) -> Plan {
         if on_band.is_empty() {
             continue;
         }
-        let (channels, width, note) = pool(band, options);
+        // The first three access points each get a channel of their own, so the pool must hold three.
+        let (channels, width, note) = pool(band, options, on_band.len().min(OWN_CHANNEL_UP_TO));
         notes.extend(note);
         widths.push((band, width));
         let indices: Vec<usize> = on_band.iter().map(|&k| out[k].0).collect();
@@ -141,6 +146,12 @@ pub fn plan(floor: &Floor, options: &PlanOptions) -> Plan {
 
 /// Two access points hearing each other better than this share their air if on one channel.
 const AUDIBLE_DBM: f32 = -92.0;
+/// What sharing a channel costs even between access points that cannot hear each other, and the
+/// extra for pairs close together: matching channels end up as far apart as possible.
+const REUSE_COST: f32 = 5.0;
+const NEAR_COST: f32 = 2.0;
+/// Up to this many access points always get a channel each: the width narrows until that fits.
+const OWN_CHANNEL_UP_TO: usize = 3;
 /// Up to this many access points are planned by trying every combination.
 const EXHAUSTIVE_UP_TO: usize = 8;
 
@@ -168,7 +179,21 @@ fn assign(floor: &Floor, band: RadioBand, aps: &[usize], k: usize) -> (Vec<usize
             w[j][i] = w[i][j];
         }
     }
-    let cost = |c: &[usize]| -> f32 { (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| c[i] == c[j]).map(|(i, j)| w[i][j]).sum() };
+    // What sharing a channel costs a pair: the disturbance they cause each other, plus a charge
+    // for sharing at all (so a channel is never doubled while another sits free, even for access
+    // points that cannot hear each other), plus a little more the closer together they are.
+    let metres = mpp.unwrap_or(0.05);
+    let mut p = w.clone();
+    for i in 0..n {
+        for j in 0..n {
+            if i != j {
+                let (a, b) = (&floor.aps[aps[i]], &floor.aps[aps[j]]);
+                let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt() * metres;
+                p[i][j] += REUSE_COST + NEAR_COST / (1.0 + d / 5.0);
+            }
+        }
+    }
+    let cost = |c: &[usize]| -> f32 { (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| c[i] == c[j]).map(|(i, j)| p[i][j]).sum() };
     if n <= EXHAUSTIVE_UP_TO {
         // Every combination, the first access point fixed to the first channel (the rest follow by symmetry).
         let mut best = (f32::MAX, vec![0; n]);
@@ -196,11 +221,11 @@ fn assign(floor: &Floor, band: RadioBand, aps: &[usize], k: usize) -> (Vec<usize
     // Many access points: one at a time onto its quietest channel, then a few passes to improve.
     let mut c = vec![0usize; n];
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|a, b| w[*b].iter().sum::<f32>().total_cmp(&w[*a].iter().sum::<f32>()));
+    order.sort_by(|a, b| p[*b].iter().sum::<f32>().total_cmp(&p[*a].iter().sum::<f32>()));
     let mut placed = vec![false; n];
     for &i in &order {
         c[i] = (0..k).min_by(|&x, &y| {
-            let load = |ch: usize| (0..n).filter(|&j| placed[j] && c[j] == ch).map(|j| w[i][j]).sum::<f32>();
+            let load = |ch: usize| (0..n).filter(|&j| placed[j] && c[j] == ch).map(|j| p[i][j]).sum::<f32>();
             load(x).total_cmp(&load(y))
         }).unwrap_or(0);
         placed[i] = true;
@@ -208,7 +233,7 @@ fn assign(floor: &Floor, band: RadioBand, aps: &[usize], k: usize) -> (Vec<usize
     for _ in 0..4 {
         for &i in &order {
             c[i] = (0..k).min_by(|&x, &y| {
-                let load = |ch: usize| (0..n).filter(|&j| j != i && c[j] == ch).map(|j| w[i][j]).sum::<f32>();
+                let load = |ch: usize| (0..n).filter(|&j| j != i && c[j] == ch).map(|j| p[i][j]).sum::<f32>();
                 load(x).total_cmp(&load(y))
             }).unwrap_or(0);
         }
@@ -265,6 +290,30 @@ mod tests {
     }
 
     #[test]
+    fn up_to_three_access_points_each_get_their_own_channel_however_far_apart() {
+        let aps = vec![PlannedAp::new("a".into(), 50.0, 200.0), PlannedAp::new("b".into(), 500.0, 200.0), PlannedAp::new("c".into(), 950.0, 200.0)];
+        let p = plan(&floor(aps), &PlanOptions::default()).assignments;
+        for band in [RadioBand::Ghz2_4, RadioBand::Ghz5] {
+            let ch: Vec<u32> = (0..3).map(|i| channel(&p, i, band)).collect();
+            assert!(ch[0] != ch[1] && ch[1] != ch[2] && ch[0] != ch[2], "{band:?} {ch:?}");
+        }
+    }
+
+    #[test]
+    fn a_fourth_access_point_shares_a_channel_with_the_one_furthest_away() {
+        let aps = vec![
+            PlannedAp::new("a".into(), 50.0, 200.0),
+            PlannedAp::new("b".into(), 350.0, 200.0),
+            PlannedAp::new("c".into(), 650.0, 200.0),
+            PlannedAp::new("d".into(), 950.0, 200.0),
+        ];
+        let p = plan(&floor(aps), &PlanOptions::default()).assignments;
+        let ch: Vec<u32> = (0..4).map(|i| channel(&p, i, RadioBand::Ghz2_4)).collect();
+        assert!(ch[0] != ch[1] && ch[1] != ch[2] && ch[2] != ch[3], "{ch:?}");
+        assert!(ch[0] == ch[3] || ch[0] == ch[2] || ch[1] == ch[3], "{ch:?}");
+    }
+
+    #[test]
     fn a_lone_access_point_gets_the_first_channel_of_each_band_it_has() {
         let p = plan(&floor(vec![PlannedAp::new("a".into(), 100.0, 100.0)]), &PlanOptions::default()).assignments;
         let chans = &p[0].1;
@@ -275,13 +324,21 @@ mod tests {
     #[test]
     fn wider_channels_leave_fewer_to_choose_from_and_dfs_adds_some() {
         let o = |w, dfs| PlanOptions { width_5: w, allow_dfs: dfs, ..PlanOptions::default() };
-        assert_eq!(pool(RadioBand::Ghz5, &o(80, false)).0, vec![36, 149]);
-        assert!(pool(RadioBand::Ghz5, &o(80, true)).0.len() > 2);
+        assert_eq!(pool(RadioBand::Ghz5, &o(80, false), 1).0, vec![36, 149]);
+        assert!(pool(RadioBand::Ghz5, &o(80, true), 1).0.len() > 2);
         // 160 MHz without DFS has no channel: the plan drops to 80 and says so.
-        let (list, width, note) = pool(RadioBand::Ghz5, &o(160, false));
+        let (list, width, note) = pool(RadioBand::Ghz5, &o(160, false), 1);
         assert_eq!((list, width), (vec![36, 149], 80));
         assert!(note.unwrap().contains("DFS"));
-        assert_eq!(pool(RadioBand::Ghz6, &PlanOptions { width_6: 320, ..PlanOptions::default() }).0, vec![31, 95, 159]);
+        assert_eq!(pool(RadioBand::Ghz6, &PlanOptions { width_6: 320, ..PlanOptions::default() }, 1).0, vec![31, 95, 159]);
+    }
+
+    #[test]
+    fn three_access_points_on_wide_channels_narrow_until_each_has_its_own() {
+        let o = PlanOptions { width_5: 80, ..PlanOptions::default() };
+        // 80 MHz without DFS has two channels: three access points need the next width down.
+        let (list, width, note) = pool(RadioBand::Ghz5, &o, 3);
+        assert!(list.len() >= 3 && width < 80 && note.is_some(), "{list:?} {width}");
     }
 
     #[test]
@@ -294,9 +351,14 @@ mod tests {
 
     #[test]
     fn neighbours_forced_onto_one_channel_are_reported() {
-        let aps = vec![PlannedAp::new("a".into(), 100.0, 200.0), PlannedAp::new("b".into(), 200.0, 200.0), PlannedAp::new("c".into(), 300.0, 200.0)];
-        // 2.4 GHz at 40 MHz has one channel: all three share it.
-        let p = plan(&floor(aps), &PlanOptions { width_2_4: 40, ..PlanOptions::default() });
+        // Four close together on 2.4 GHz, which has three channels: two of them must share.
+        let aps = vec![
+            PlannedAp::new("a".into(), 100.0, 200.0),
+            PlannedAp::new("b".into(), 200.0, 200.0),
+            PlannedAp::new("c".into(), 300.0, 200.0),
+            PlannedAp::new("d".into(), 400.0, 200.0),
+        ];
+        let p = plan(&floor(aps), &PlanOptions::default());
         assert!(p.shared.iter().any(|s| s.2 == RadioBand::Ghz2_4), "{:?}", p.shared);
     }
 }
