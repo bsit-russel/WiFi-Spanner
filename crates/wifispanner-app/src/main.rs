@@ -825,7 +825,11 @@ impl App {
             ui.add_space(8.0);
             ui.weak(support_details());
             ui.add_space(6.0);
-            ui.weak("Please do not send survey projects that contain private network details unless asked to.");
+            ui.weak(
+                "Privacy: please leave out personal information, such as names, addresses and network names or \
+                 passwords, and do not send survey projects unless asked to. If you choose to include personal \
+                 information, you consent to Byte Size IT using it only to respond to your report.",
+            );
             ui.hyperlink_to(BYTE_SIZE_SITE, BYTE_SIZE_URL);
             theme::actions(ui, |ui| {
                 if theme::button(ui, ButtonKind::Text, Some(ICON_CLOSE), "Close").clicked() {
