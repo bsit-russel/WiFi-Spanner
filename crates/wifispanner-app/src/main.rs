@@ -39,7 +39,7 @@ const BYTE_SIZE_PNG: &[u8] = include_bytes!("../../../assets/byte-size-it.png");
 const BYTE_SIZE_NAME: &str = "Byte Size IT";
 const BYTE_SIZE_URL: &str = "https://byte-size.co.za";
 const BYTE_SIZE_SITE: &str = "byte-size.co.za";
-const SUPPORT_EMAIL: &str = "dev@byte-size.co.za";
+const SUPPORT_EMAIL: &str = "bugsplat@byte-size.co.za";
 /// Size of the splash card, drawn in the middle of the (see-through) window.
 const SPLASH_SIZE: [f32; 2] = [560.0, 390.0];
 /// Corner radius of the splash card, in points.
@@ -407,7 +407,7 @@ impl App {
         if ui.add(theme::menu_entry(ui, Some(ICON_SYSTEM_UPDATE), "Check for updates")).clicked() {
             *action = Some(MenuAction::CheckUpdates);
         }
-        if ui.add(theme::menu_entry(ui, Some(ICON_HELP), "Get help...")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_HELP), "Report a bug...")).clicked() {
             self.help_open = true;
         }
         if ui.add(theme::menu_entry(ui, Some(ICON_INFO), "About...")).clicked() {
@@ -812,10 +812,10 @@ impl App {
             return;
         }
         let mut close = false;
-        theme::dialog(ctx, "Get help", 420.0, |ui| {
-            ui.label("Found a bug, want a new feature, or need a hand? Email us:");
+        theme::dialog(ctx, "Report a bug", 420.0, |ui| {
+            ui.label("Found a bug? Email it to us:");
             ui.add_space(4.0);
-            let subject = format!("WiFi Spanner {} feedback", env!("CARGO_PKG_VERSION")).replace(' ', "%20");
+            let subject = format!("WiFi Spanner {} bug report", env!("CARGO_PKG_VERSION")).replace(' ', "%20");
             ui.hyperlink_to(SUPPORT_EMAIL, format!("mailto:{SUPPORT_EMAIL}?subject={subject}"));
             ui.add_space(8.0);
             ui.label("It helps to include:");
@@ -825,6 +825,13 @@ impl App {
             ui.add_space(8.0);
             ui.weak(support_details());
             ui.add_space(6.0);
+            ui.weak(
+                "This mailbox is not monitored directly. Reports are read and handled in order of how critical they \
+                 are, not in the order received or by who sent them, and sending one does not guarantee a reply or \
+                 a fix. Check the change log in each update (menu > Check for updates) to see whether a bug has been \
+                 fixed: no reply is sent when it is.",
+            );
+            ui.add_space(4.0);
             ui.weak(
                 "Privacy: please leave out personal information, such as names, addresses and network names or \
                  passwords, and do not send survey projects unless asked to. If you choose to include personal \
@@ -877,7 +884,7 @@ impl App {
                 );
                 ui.hyperlink_to("GNU General Public License", "https://www.gnu.org/licenses/gpl-3.0.html");
                 ui.add_space(10.0);
-                ui.weak("Bugs and feature requests:");
+                ui.weak("Report a bug:");
                 ui.hyperlink_to(SUPPORT_EMAIL, format!("mailto:{SUPPORT_EMAIL}"));
             });
             theme::actions(ui, |ui| {

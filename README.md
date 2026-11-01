@@ -52,9 +52,9 @@ cargo run -p wifispanner-app
 The AppImage is built on Linux only (`packaging/build-appimage.sh`), by CI on
 every push to `main`.
 
-## Reporting issues
+## Reporting bugs
 
-Found a bug or want a feature? Email [dev@byte-size.co.za](mailto:dev@byte-size.co.za). The app's menu has a *Get help...* window with the details worth including.
+Found a bug? Email [bugsplat@byte-size.co.za](mailto:bugsplat@byte-size.co.za) (the menu has a *Report a bug...* window with the details worth including). The mailbox is not monitored directly: reports are handled in order of how critical they are, and sending one does not guarantee a reply or a fix. Check the change log of each release to see whether it has been fixed. Feature requests are not taken.
 
 ## Licence
 
