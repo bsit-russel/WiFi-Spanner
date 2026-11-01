@@ -205,13 +205,6 @@ pub fn field(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
     resp
 }
 
-/// Like [`field`], but greyed out unless `enabled`.
-pub fn field_enabled(ui: &mut egui::Ui, enabled: bool, widget: impl egui::Widget) -> egui::Response {
-    let resp = ui.add_enabled(enabled, widget);
-    field_edge(ui, &resp);
-    resp
-}
-
 /// Give a drop-down's closed box Carbon's edge, and pass it on.
 pub fn dropdown<R>(shown: egui::InnerResponse<R>, ui: &egui::Ui) -> egui::InnerResponse<R> {
     field_edge(ui, &shown.response);

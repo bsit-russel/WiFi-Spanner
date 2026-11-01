@@ -1774,12 +1774,15 @@ impl FloorTab {
             if theme::switch_row(ui, &mut full, "Full height").changed() {
                 edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
             }
-            ui.label("Height");
-            if theme::field_enabled(ui, !full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
-                edits.push(WallEdit::Height(Some(metres.min(ceiling))));
-            }
-            if mixed && selecting {
-                ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+            // The height only shows, and can only be changed, once full height is switched off.
+            if !full {
+                ui.label("Height");
+                if theme::field(ui, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                    edits.push(WallEdit::Height(Some(metres.min(ceiling))));
+                }
+                if mixed && selecting {
+                    ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+                }
             }
             ui.label("Ceiling");
             let mut c = ceiling;
@@ -1848,7 +1851,8 @@ impl FloorTab {
                         }
                         };
                         // The whole menu shows at its full height; only past 1.5 times its width does it scroll.
-                        let measured = if natural > max_height {
+                        let own_scroll = matches!(self.tool, Tool::Walls | Tool::Obstacles);
+                        let measured = if natural > max_height && !own_scroll {
                             egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| body(ui)).content_size.y
                         } else {
                             ui.scope(|ui| body(ui)).response.rect.height()
@@ -1882,11 +1886,11 @@ impl FloorTab {
                 edits.push(WallEdit::Mode(WallMode::Room));
             }
         });
-        self.material_rows(ui, Some(self.wall_material), edits);
+        let list = self.sticky_list(ui, |ui| self.material_rows(ui, Some(self.wall_material), edits));
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
         let busy = self.wallscan_rx.is_some();
         ui.horizontal_wrapped(|ui| {
-            let label = if busy { "Looking for walls..." } else { "Detect walls from the plan" };
+            let label = if busy { "Looking for walls..." } else { "Detect walls" };
             if ui.add_enabled_ui(!busy && floor.metres_per_px.is_some(), |ui| theme::button(ui, ButtonKind::Tonal, Some(ICON_AUTO_FIX_HIGH), label)).inner
                 .on_hover_text(if floor.metres_per_px.is_some() {
                     "Traces the dark wall bands on the plan, with doors and windows where they break the walls. Walls come in as concrete, doors as wood and windows as window glass; change them with Select."
@@ -1903,6 +1907,30 @@ impl FloorTab {
         }
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
+        }
+        self.sticky_end(ui, list);
+    }
+
+    /// A list that scrolls on its own while what follows it stays in view: the menu is no taller
+    /// than 1.5 times its width, and the list takes what the rest leaves. Returns where it began
+    /// and how tall it came out, for [`Self::sticky_end`].
+    fn sticky_list(&self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) -> (f32, f32) {
+        let start = ui.min_rect().top();
+        let fixed_id = egui::Id::NULL.with("sticky_fixed");
+        let fixed = ui.ctx().data(|d| d.get_temp::<f32>(fixed_id)).unwrap_or(160.0);
+        let room = (panel_width(ui.ctx()) * 1.5 - fixed).max(120.0);
+        let out = egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, content);
+        (start, out.inner_rect.height())
+    }
+
+    /// Note how tall everything but the list is, so the list gets the rest next frame.
+    fn sticky_end(&self, ui: &mut egui::Ui, (start, list_h): (f32, f32)) {
+        let fixed = (ui.min_rect().bottom() - start - list_h).max(0.0);
+        let fixed_id = egui::Id::NULL.with("sticky_fixed");
+        let old = ui.ctx().data(|d| d.get_temp::<f32>(fixed_id)).unwrap_or(0.0);
+        if (fixed - old).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(fixed_id, fixed));
+            ui.ctx().request_repaint();
         }
     }
 
@@ -2159,12 +2187,14 @@ impl FloorTab {
             if theme::switch_row(ui, &mut full, "Full height").changed() {
                 edits.push(WallEdit::AreaHeight(if full { None } else { Some(ceiling) }));
             }
-            ui.label("Height");
-            if theme::field_enabled(ui, !full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
-                edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
-            }
-            if mixed && selecting {
-                ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+            if !full {
+                ui.label("Height");
+                if theme::field(ui, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                    edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
+                }
+                if mixed && selecting {
+                    ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+                }
             }
         });
     }
@@ -2184,11 +2214,12 @@ impl FloorTab {
                 edits.push(WallEdit::AreaMode(AreaMode::Polygon));
             }
         });
-        self.kind_rows(ui, Some(self.obstacle_kind), edits);
+        let list = self.sticky_list(ui, |ui| self.kind_rows(ui, Some(self.obstacle_kind), edits));
         self.area_height_controls(ui, floor, Some(self.obstacle_height), false, edits);
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
         }
+        self.sticky_end(ui, list);
     }
 
     /// The coverage menu: brush, paint or erase, and what the paint is for.
