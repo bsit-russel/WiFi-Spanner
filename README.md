@@ -1,7 +1,6 @@
 # WiFi Spanner
 
-Wi-Fi site survey and planning for Linux: import a floor plan, model walls,
-walk the building, and record the signal strength and SSIDs the laptop sees.
+A simple Wi-Fi Scanner and Planner (hense the _awful_ name!). Your - hopefully - one stop shop for site surveys and layout planning for Linux: import a floor plan, model walls, walk the building, and record the signal strength and SSIDs the laptop sees.
 Think NetSpot or Hamina, but native on Linux.
 
 ## Layout
