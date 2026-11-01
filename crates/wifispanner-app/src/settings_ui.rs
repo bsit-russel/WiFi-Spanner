@@ -124,6 +124,9 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
          any time from the menu: Check for updates.",
     );
     ui.add_space(14.0);
+    crate::theme::switch_row(ui, &mut s.pen_mode, "Pen mode: a finger moves the plan");
+    ui.weak("With a pen in use, one finger on the touch screen pans the plan instead of drawing, selecting or placing. The pen and mouse work as usual; two fingers still pan and zoom.");
+    ui.add_space(14.0);
     ui.label(crate::theme::medium("Projects folder"));
     ui.weak(&launcher.projects_dir);
     if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_FOLDER_OPEN), "Move projects folder...")

@@ -255,6 +255,8 @@ struct App {
     /// Pen events from the Wayland tablet protocol, and where the pen was last.
     pen_rx: Option<std::sync::mpsc::Receiver<pen::PenEvent>>,
     pen_started: bool,
+    /// The fingers on the touch screen now.
+    touches: std::collections::HashSet<u64>,
     pen_pos: egui::Pos2,
     /// A short message shown as a snackbar, and when it appeared.
     toast: Option<(String, std::time::Instant)>,
@@ -308,6 +310,7 @@ impl App {
             window: WindowSizing::default(),
             pen_rx: None,
             pen_started: false,
+            touches: std::collections::HashSet::new(),
             pen_pos: egui::Pos2::ZERO,
             toast: None,
             settings_section: settings_ui::Section::default(),
@@ -973,6 +976,24 @@ impl App {
 impl eframe::App for App {
     /// Feed pen events into egui as pointer events.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // Which fingers are down, so the plan can tell a finger from the pen and the mouse. It is
+        // still "touching" on the frame a finger lifts, so the lift is not taken as a pen stroke.
+        let mut lifted = false;
+        for e in &raw_input.events {
+            if let egui::Event::Touch { id, phase, .. } = e {
+                match phase {
+                    egui::TouchPhase::Start | egui::TouchPhase::Move => {
+                        self.touches.insert(id.0);
+                    }
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                        self.touches.remove(&id.0);
+                        lifted = true;
+                    }
+                }
+            }
+        }
+        let touching = self.settings.pen_mode && (!self.touches.is_empty() || lifted);
+        ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("finger_touching"), touching));
         let Some(rx) = &self.pen_rx else { return };
         let events: Vec<_> = rx.try_iter().collect();
         let modifiers = ctx.input(|i| i.modifiers);

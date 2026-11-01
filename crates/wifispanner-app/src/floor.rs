@@ -3369,7 +3369,11 @@ impl FloorTab {
         }
         // Selecting by box uses the primary drag, so the plan pans with the
         // middle or right button then.
-        let panning = if self.tool == Tool::Aps {
+        // In pen mode a finger only moves the plan: it never draws, selects or places.
+        let finger = ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::NULL.with("finger_touching"))).unwrap_or(false) && self.view.pen_mode;
+        let panning = if finger {
+            resp.dragged()
+        } else if self.tool == Tool::Aps {
             resp.dragged() && self.ap_drag.is_none()
         } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::Client | Tool::Zone) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
@@ -3430,7 +3434,11 @@ impl FloorTab {
                 }
             }
         }
-        if matches!(self.tool, Tool::Walls | Tool::Select) {
+        if finger {
+            self.box_start = None;
+            self.ap_box_start = None;
+            self.zone_stroke.clear();
+        } else if matches!(self.tool, Tool::Walls | Tool::Select) {
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if self.tool == Tool::Walls {
                 self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, true, false, false);

@@ -96,6 +96,9 @@ pub struct Settings {
     pub plan_width_5: u32,
     pub plan_width_6: u32,
     pub allow_dfs: bool,
+    // Input
+    /// Pen mode: one finger on the touch screen moves the plan and never draws; the pen draws.
+    pub pen_mode: bool,
 }
 
 impl Default for Settings {
@@ -125,6 +128,7 @@ impl Default for Settings {
             plan_width_5: 40,
             plan_width_6: 80,
             allow_dfs: false,
+            pen_mode: false,
         }
     }
 }
