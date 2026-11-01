@@ -17,7 +17,8 @@ use wifispanner_scan::Band;
 
 /// How wide the channels are (MHz) on each band, and whether channels that must check for radar
 /// (DFS, part of 5 GHz) may be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct PlanOptions {
     pub width_2_4: u32,
     pub width_5: u32,

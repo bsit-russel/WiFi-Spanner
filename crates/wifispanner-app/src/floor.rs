@@ -56,6 +56,8 @@ enum Tool {
     Obstacles,
     /// Paint where the optimiser may place access points and count coverage.
     Zone,
+    /// Channel widths and DFS for the channel plan.
+    Channels,
     /// Drop a simulated client on the plan and see how it would connect.
     Client,
 }
@@ -149,6 +151,21 @@ const AP_PICK_PX: f32 = 16.0;
 /// The stacked-layers picture for the floors button (white on transparent, tinted when drawn).
 const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.png");
 /// How far down the right edge the bubbles start, below the floors button.
+/// The channel plan picture: two sine waves of different lengths laid over each other, like
+/// signals sharing the air.
+fn paint_channels(painter: &egui::Painter, centre: Pos2, size: f32, colour: Color32) {
+    let half = size * 0.62;
+    for (cycles, amplitude, phase, width) in [(1.5, 0.42, 0.0, 2.0), (2.5, 0.3, 1.2, 1.6)] {
+        let points: Vec<Pos2> = (0..=40)
+            .map(|i| {
+                let t = i as f32 / 40.0;
+                Pos2::new(centre.x - half + 2.0 * half * t, centre.y - size * amplitude * (t * cycles * std::f32::consts::TAU + phase).sin())
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, Stroke::new(width, colour)));
+    }
+}
+
 /// The Add Devices picture: an access point seen from above (a circle with a smaller one inside)
 /// with a plus over its lower right, separated from it by a border in the button's own colour.
 fn paint_add_device(painter: &egui::Painter, centre: Pos2, size: f32, colour: Color32, background: Color32) {
@@ -211,7 +228,7 @@ fn round_size(ctx: &egui::Context) -> f32 {
 /// How far down the right edge the menus start, below the round buttons: the floors button,
 /// then Select, and in Planning the devices and optimise buttons as well.
 fn right_top(ctx: &egui::Context, planning: bool) -> f32 {
-    let buttons = if planning { 4.0 } else { 2.0 };
+    let buttons = if planning { 5.0 } else { 2.0 };
     12.0 + buttons * round_size(ctx) + 8.0 * buttons
 }
 
@@ -342,8 +359,6 @@ pub struct FloorTab {
     zone_dirty: bool,
     /// The tool to go back to once the area is painted for the optimiser.
     zone_return: Option<Tool>,
-    /// The channel plan profile picked in the report; until then the widths in Settings apply.
-    plan_profile: Option<PlanProfile>,
     /// The kind of object the Select tool works on: that of the tool it was chosen from (all when none).
     select_only: Option<Tool>,
     report_dialog: Option<report::OptionsDialog>,
@@ -449,6 +464,9 @@ enum WallEdit {
     ZoneClear,
     ZoneRun,
     ZoneCancel,
+    PlanWidth(usize, u32),
+    PlanDfs(bool),
+    PlanProfile(PlanProfile),
     Undo,
     Delete,
 }
@@ -576,7 +594,6 @@ impl Default for FloorTab {
             zone_tex: None,
             zone_dirty: true,
             zone_return: None,
-            plan_profile: None,
             select_only: None,
             report_dialog: None,
         }
@@ -1617,6 +1634,23 @@ impl FloorTab {
                 self.start_optimise(true);
             }
             WallEdit::ZoneCancel => self.leave_zone(),
+            WallEdit::PlanWidth(band, w) => {
+                if let Some(p) = self.project.as_mut() {
+                    match band {
+                        0 => p.plan.width_2_4 = w,
+                        1 => p.plan.width_5 = w,
+                        _ => p.plan.width_6 = w,
+                    }
+                }
+                self.autosave();
+            }
+            WallEdit::PlanDfs(on) => {
+                if let Some(p) = self.project.as_mut() {
+                    p.plan.allow_dfs = on;
+                }
+                self.autosave();
+            }
+            WallEdit::PlanProfile(p) => self.set_plan_profile(p),
             WallEdit::ZoneUndo => {
                 if let Some(p) = self.project.as_mut() {
                     p.floor_mut().zone.pop();
@@ -1696,7 +1730,7 @@ impl FloorTab {
         self.ap_drag = None;
         self.box_start = None;
         self.zone_stroke.clear();
-        if tool != Tool::Zone {
+        if !matches!(tool, Tool::Zone | Tool::Channels) {
             self.zone_return = None;
         }
         if tool == Tool::Scale {
@@ -1796,7 +1830,7 @@ impl FloorTab {
     fn right_panel(&self, ctx: &egui::Context, canvas: Rect) -> (Vec<WallEdit>, Vec<ApEdit>) {
         let r = theme::roles(ctx);
         let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
-        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Client | Tool::Scale) {
+        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Channels | Tool::Client | Tool::Scale) {
             return (walls_out, aps_out);
         }
         if self.tool == Tool::Aps && (self.mode == WorkMode::Survey || !self.devices_open) {
@@ -1844,6 +1878,7 @@ impl FloorTab {
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
                                 Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
                                 Tool::Zone => self.zone_content(ui, floor, &mut walls_out),
+                                Tool::Channels => self.channels_content(ui, &mut walls_out),
                                 Tool::Client => self.client_content(ui, floor, &mut walls_out),
                                 Tool::Scale => self.scale_content(ui, &mut walls_out),
                                 _ => {}
@@ -2264,19 +2299,65 @@ impl FloorTab {
         ui.label(egui::RichText::new(OPTIMISER_NOTE).text_style(egui::TextStyle::Small).color(r.on_surface_variant));
     }
 
-    /// Back to the tool in use before the area was painted.
-    /// The settings' channel options, with the widths of the chosen profile over them.
+    /// The channel widths and DFS choice of the project.
     fn plan_options(&self) -> wifispanner_core::channels::PlanOptions {
-        let mut o = self.view.plan_options();
-        if let Some(p) = self.plan_profile {
-            (o.width_2_4, o.width_5, o.width_6) = p.widths();
+        self.project.as_ref().map(|p| p.plan).unwrap_or_default()
+    }
+
+    /// Back to the tool in use before the area was painted.
+    fn set_plan_profile(&mut self, p: PlanProfile) {
+        if let Some(pr) = self.project.as_mut() {
+            (pr.plan.width_2_4, pr.plan.width_5, pr.plan.width_6) = p.widths();
         }
-        o
+        self.autosave();
     }
 
     fn leave_zone(&mut self) {
         let back = self.zone_return.take().unwrap_or(Tool::Aps);
         self.set_tool(back);
+    }
+
+    /// The channel plan menu: how wide the channels are and whether DFS may be used.
+    fn channels_content(&self, ui: &mut egui::Ui, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        let o = self.plan_options();
+        ui.label(theme::heading(ui, "Channel Plan")).on_hover_text("Used by the optimiser and the channel plan for every access point in this project.");
+        ui.horizontal_wrapped(|ui| {
+            for (profile, label, tip) in [
+                (PlanProfile::Interference, "Minimise interference", "20 MHz on 2.4 GHz, 40 MHz on 5 GHz, 80 MHz on 6 GHz: more separate channels."),
+                (PlanProfile::Speed, "Max speed", "20 MHz on 2.4 GHz, 80 MHz on 5 GHz, 320 MHz on 6 GHz: faster links, fewer channels, a stronger signal needed."),
+            ] {
+                if theme::chip(ui, (o.width_2_4, o.width_5, o.width_6) == profile.widths(), None, label).on_hover_text(tip).clicked() {
+                    edits.push(WallEdit::PlanProfile(profile));
+                }
+            }
+        });
+        ui.label(egui::RichText::new("Wider channels carry more but leave fewer channels to go round, and need a stronger signal (3 dB more for every doubling), so the plan may recommend more access points.").color(r.on_surface_variant));
+        let mut width = |ui: &mut egui::Ui, band: usize, name: &str, value: u32, choices: &[u32]| {
+            ui.horizontal(|ui| {
+                ui.label(name);
+                let mut v = value;
+                theme::dropdown(
+                    egui::ComboBox::from_id_salt(name).selected_text(format!("{v} MHz")).width(110.0).show_ui(ui, |ui| {
+                        for w in choices {
+                            ui.selectable_value(&mut v, *w, format!("{w} MHz"));
+                        }
+                    }),
+                    ui,
+                );
+                if v != value {
+                    edits.push(WallEdit::PlanWidth(band, v));
+                }
+            });
+        };
+        width(ui, 0, "2.4 GHz", o.width_2_4, &wifispanner_core::channels::PlanOptions::WIDTHS_2_4);
+        width(ui, 1, "5 GHz", o.width_5, &wifispanner_core::channels::PlanOptions::WIDTHS_5);
+        width(ui, 2, "6 GHz", o.width_6, &wifispanner_core::channels::PlanOptions::WIDTHS_6);
+        let mut dfs = o.allow_dfs;
+        if theme::switch_row(ui, &mut dfs, "Allow DFS channels (5 GHz)").changed() {
+            edits.push(WallEdit::PlanDfs(dfs));
+        }
+        ui.label(egui::RichText::new("DFS channels share the band with weather radar, so an access point must check for it and can be forced off its channel. They add channels, and 160 MHz on 5 GHz needs them.").color(r.on_surface_variant));
     }
 
     /// The brush radius in plan pixels.
@@ -3211,7 +3292,7 @@ impl FloorTab {
             });
             let widths: Vec<String> = s.widths.iter().map(|(b, w)| format!("{} {w} MHz", b.band())).collect();
             ui.weak(format!(
-                "Neighbouring access points are on different channels to avoid interference, and overlap enough to roam. Planned at {}; DFS channels {}. Other widths and DFS are in Settings > Channels.",
+                "Neighbouring access points are on different channels to avoid interference, and overlap enough to roam. Planned at {}; DFS channels {}. Other widths and DFS are under the channel plan button.",
                 widths.join(", "),
                 if s.dfs { "allowed" } else { "not used" }
             ));
@@ -3261,7 +3342,7 @@ impl FloorTab {
         }
         if let Some(p) = pick_profile {
             // The plan and the recommendations are redone for the new widths at once.
-            self.plan_profile = Some(p);
+            self.set_plan_profile(p);
         }
         if repaint {
             self.zone_return = Some(self.tool);
@@ -3367,7 +3448,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("optimise_button"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 3.0 * (round_size(ctx) + 8.0)))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 4.0 * (round_size(ctx) + 8.0)))
             .show(ctx, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
                 let fill = if active { r.secondary_container } else { r.surface_container_high };
@@ -3449,6 +3530,38 @@ impl FloorTab {
             });
         if picked {
             self.set_tool(Tool::Select);
+        }
+    }
+
+    /// The channel plan button, under Add Devices: channel widths and DFS.
+    fn channels_button(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        let active = self.tool == Tool::Channels;
+        let mut clicked = false;
+        egui::Area::new(egui::Id::unique("channels_button"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 3.0 * (round_size(ctx) + 8.0)))
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
+                let fill = if active { r.secondary_container } else { r.surface_container_high };
+                let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
+                let painter = ui.painter();
+                painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                let colour = if active { r.on_secondary_container } else { r.on_surface };
+                paint_channels(painter, rect.center(), round_size(ctx) * 0.5, colour);
+                clicked = resp.on_hover_text("Channel plan: widths and DFS").clicked();
+            });
+        if clicked {
+            if active {
+                let back = self.zone_return.take().unwrap_or(Tool::Aps);
+                self.set_tool(back);
+            } else {
+                if !matches!(self.tool, Tool::Zone | Tool::Channels) {
+                    self.zone_return = Some(self.tool);
+                }
+                self.set_tool(Tool::Channels);
+            }
         }
     }
 
@@ -3878,6 +3991,7 @@ impl FloorTab {
         self.select_button(ui.ctx(), rect);
         if self.mode == WorkMode::Plan {
             self.devices_button(ui.ctx(), rect);
+            self.channels_button(ui.ctx(), rect);
             self.optimise_button(ui.ctx(), rect);
         }
         if self.floors_open {
@@ -3896,7 +4010,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Client => {}
+            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Channels | Tool::Client => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();

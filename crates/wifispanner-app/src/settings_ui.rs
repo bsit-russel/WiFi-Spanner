@@ -16,16 +16,14 @@ pub enum Section {
     Scanner,
     Survey,
     Heatmap,
-    Channels,
 }
 
 impl Section {
-    const ALL: [(Section, &'static str); 5] = [
+    const ALL: [(Section, &'static str); 4] = [
         (Section::General, "General"),
         (Section::Scanner, "Scanner"),
         (Section::Survey, "Survey"),
         (Section::Heatmap, "Heatmap"),
-        (Section::Channels, "Channels"),
     ];
 }
 
@@ -70,7 +68,6 @@ pub fn show(
                     Section::Scanner => scanner(ui, settings, cards),
                     Section::Survey => survey(ui, settings),
                     Section::Heatmap => heatmap_section(ui, settings),
-                    Section::Channels => channels_section(ui, settings),
                     Section::General => general(ui, settings, launcher),
                 });
             });
@@ -203,37 +200,6 @@ fn survey(ui: &mut egui::Ui, s: &mut Settings) {
     if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_REFRESH), "Reset survey settings").clicked() {
         s.reset_survey();
     }
-}
-
-/// Channel widths and DFS for the channel plan and the access point recommendations.
-fn channels_section(ui: &mut egui::Ui, s: &mut Settings) {
-    ui.label(crate::theme::medium("Channel widths"));
-    ui.weak(
-        "The width the channel plan uses on each band. Wider channels carry more but leave fewer channels to go round, \
-         and need a stronger signal (3 dB more for every doubling), so the plan may recommend more access points.",
-    );
-    let width = |ui: &mut egui::Ui, name: &str, value: &mut u32, choices: &[u32]| {
-        ui.horizontal(|ui| {
-            ui.label(name);
-            crate::theme::dropdown(
-                egui::ComboBox::from_id_salt(name).selected_text(format!("{value} MHz")).width(110.0).show_ui(ui, |ui| {
-                    for w in choices {
-                        ui.selectable_value(value, *w, format!("{w} MHz"));
-                    }
-                }),
-                ui,
-            );
-        });
-    };
-    width(ui, "2.4 GHz", &mut s.plan_width_2_4, &wifispanner_core::channels::PlanOptions::WIDTHS_2_4);
-    width(ui, "5 GHz", &mut s.plan_width_5, &wifispanner_core::channels::PlanOptions::WIDTHS_5);
-    width(ui, "6 GHz", &mut s.plan_width_6, &wifispanner_core::channels::PlanOptions::WIDTHS_6);
-    ui.add_space(14.0);
-    crate::theme::switch_row(ui, &mut s.allow_dfs, "Allow DFS channels (5 GHz)");
-    ui.weak(
-        "DFS channels share the band with weather radar, so an access point must check for it and can be forced off \
-         its channel. They add channels, and 160 MHz on 5 GHz needs them. Many phones and laptops handle them well.",
-    );
 }
 
 fn heatmap_section(ui: &mut egui::Ui, s: &mut Settings) {

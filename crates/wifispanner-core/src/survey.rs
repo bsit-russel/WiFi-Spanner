@@ -23,6 +23,9 @@ pub struct Project {
     /// The floor being worked on.
     #[serde(default)]
     pub active: usize,
+    /// Channel widths and DFS for the channel plan.
+    #[serde(default)]
+    pub plan: crate::channels::PlanOptions,
     /// Projects saved before there were several floors hold just this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     floor: Option<Floor>,
@@ -32,7 +35,7 @@ impl Project {
     pub const VERSION: u32 = 2;
 
     pub fn new(floor: Floor) -> Self {
-        Project { version: Self::VERSION, floors: vec![floor], active: 0, floor: None }
+        Project { version: Self::VERSION, floors: vec![floor], active: 0, plan: Default::default(), floor: None }
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {
