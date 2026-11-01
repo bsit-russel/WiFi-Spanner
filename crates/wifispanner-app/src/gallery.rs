@@ -507,7 +507,7 @@ mod tests {
             noise_dbm: None,
             observations: vec![Observation { bssid: "a".into(), ssid: None, freq_mhz: 5180, channel: 36, width_mhz: 80, signal_dbm: -50.0, samples: 1 }],
         };
-        let floor = Floor { name: "x".into(), image: png(600, 800), width_px: 600, height_px: 800, metres_per_px: None, points: vec![point], walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new() };
+        let floor = Floor { name: "x".into(), image: png(600, 800), width_px: 600, height_px: 800, metres_per_px: None, points: vec![point], walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new(), zone: Vec::new() };
         let good = dir.join("good.wifispanner");
         std::fs::write(&good, Project::new(floor).to_json().unwrap()).unwrap();
         let bad = dir.join("bad.wifispanner");

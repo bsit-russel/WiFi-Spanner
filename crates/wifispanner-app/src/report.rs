@@ -868,7 +868,7 @@ mod tests {
     fn project(points: Vec<SurveyPoint>) -> Project {
         let mut png = Vec::new();
         image::RgbaImage::new(40, 20).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new() })
+        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new(), zone: Vec::new() })
     }
 
     fn html(p: &Project) -> String {
