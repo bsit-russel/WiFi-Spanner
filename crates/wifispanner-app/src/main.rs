@@ -709,6 +709,8 @@ impl App {
                 self.window.resize_at = None;
                 self.window.tracking = true;
                 self.window.last_size = size;
+                // It opens maximised; the size set above is what it comes back to.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                 return;
             }
             if self.window.tries >= 4 {
@@ -716,6 +718,8 @@ impl App {
                 self.window.resize_at = None;
                 self.window.tracking = true;
                 self.window.last_size = size;
+                // It opens maximised; the size set above is what it comes back to.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                 return;
             }
             self.window.target = self.target_window_size(ctx);
