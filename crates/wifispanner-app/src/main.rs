@@ -828,8 +828,8 @@ impl App {
             ui.weak(
                 "This mailbox is not monitored directly. Reports are read and handled in order of how critical they \
                  are, not in the order received or by who sent them, and sending one does not guarantee a reply or \
-                 a fix. Check the change log in each update (menu > Check for updates) to see whether a bug has been \
-                 fixed: no reply is sent when it is.",
+                 a fix. Watch the change log shown with each update to see whether a bug has been fixed: no \
+                 reply is sent when it is.",
             );
             ui.add_space(4.0);
             ui.weak(
