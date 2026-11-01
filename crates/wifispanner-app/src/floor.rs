@@ -1835,8 +1835,8 @@ impl FloorTab {
             WallMode::Wall => "Click the start, then the end of a wall.",
             WallMode::Room => "Click two opposite corners of a room.",
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(theme::heading(ui, "Auto-draw Walls")).on_hover_text(format!("{how} Esc or right-click cancels. Hold Shift to turn snapping off."));
+        ui.label(theme::heading(ui, "Auto-draw Walls")).on_hover_text(format!("{how} Esc or right-click cancels. Hold Shift to turn snapping off."));
+        ui.horizontal(|ui| {
             if theme::chip(ui, self.wall_mode == WallMode::Wall, Some(ICON_EDIT), "Wall").clicked() {
                 edits.push(WallEdit::Mode(WallMode::Wall));
             }
@@ -2137,8 +2137,8 @@ impl FloorTab {
             AreaMode::Rectangle => "Click two opposite corners.",
             AreaMode::Polygon => "Click each corner; double-click or Enter closes it.",
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(theme::heading(ui, "Obstacle Areas")).on_hover_text(format!("{how} Esc or right-click cancels. Signal loses the dB per metre listed for the stretch it passes through, below the area's height."));
+        ui.label(theme::heading(ui, "Obstacle Areas")).on_hover_text(format!("{how} Esc or right-click cancels. Signal loses the dB per metre listed for the stretch it passes through, below the area's height."));
+        ui.horizontal(|ui| {
             if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
                 edits.push(WallEdit::AreaMode(AreaMode::Rectangle));
             }
@@ -2156,8 +2156,8 @@ impl FloorTab {
     /// The coverage menu: brush, paint or erase, and what the paint is for.
     fn zone_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(theme::heading(ui, "Optimise: Paint the Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
+        ui.label(theme::heading(ui, "Optimise: Paint the Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
+        ui.horizontal(|ui| {
             if theme::chip(ui, !self.zone_erase, Some(ICON_BRUSH), "Paint").clicked() {
                 edits.push(WallEdit::ZoneErase(false));
             }
