@@ -340,6 +340,8 @@ pub struct FloorTab {
     zone_stroke: Vec<[f32; 2]>,
     zone_tex: Option<TextureHandle>,
     zone_dirty: bool,
+    /// The tool to go back to once the area is painted for the optimiser.
+    zone_return: Option<Tool>,
     /// The kind of object the Select tool works on: that of the tool it was chosen from (all when none).
     select_only: Option<Tool>,
     report_dialog: Option<report::OptionsDialog>,
@@ -443,6 +445,8 @@ enum WallEdit {
     ZoneBrush(f32),
     ZoneUndo,
     ZoneClear,
+    ZoneRun,
+    ZoneCancel,
     Undo,
     Delete,
 }
@@ -541,6 +545,7 @@ impl Default for FloorTab {
             zone_stroke: Vec::new(),
             zone_tex: None,
             zone_dirty: true,
+            zone_return: None,
             select_only: None,
             report_dialog: None,
         }
@@ -1243,15 +1248,11 @@ impl FloorTab {
             (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
             (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
             (Tool::Aps, ICON_ROUTER, if survey { "Plot AP" } else { "Devices" }),
-            (Tool::Zone, ICON_BRUSH, "Coverage"),
             (Tool::Client, ICON_SMARTPHONE, "Client"),
             (Tool::Scale, ICON_STRAIGHTEN, "Scale"),
         ];
         let mut picked = None;
         for (tool, icon, label) in chips {
-            if tool == Tool::Zone && survey {
-                continue;
-            }
             if enabled && theme::chip(ui, current == tool, Some(icon), label).clicked() {
                 picked = Some(tool);
             }
@@ -1580,6 +1581,11 @@ impl FloorTab {
             WallEdit::DetectWalls => self.start_wallscan(),
             WallEdit::ZoneErase(e) => self.zone_erase = e,
             WallEdit::ZoneBrush(m) => self.zone_brush_m = m,
+            WallEdit::ZoneRun => {
+                self.leave_zone();
+                self.start_optimise(true);
+            }
+            WallEdit::ZoneCancel => self.leave_zone(),
             WallEdit::ZoneUndo => {
                 if let Some(p) = self.project.as_mut() {
                     p.floor_mut().zone.pop();
@@ -1659,6 +1665,9 @@ impl FloorTab {
         self.ap_drag = None;
         self.box_start = None;
         self.zone_stroke.clear();
+        if tool != Tool::Zone {
+            self.zone_return = None;
+        }
         if tool == Tool::Scale {
             self.scale_clicks.clear();
         }
@@ -2137,7 +2146,7 @@ impl FloorTab {
     fn zone_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         ui.horizontal(|ui| {
-            ui.label(theme::heading(ui, "Coverage Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
+            ui.label(theme::heading(ui, "Optimise: Paint the Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
             if theme::chip(ui, !self.zone_erase, Some(ICON_BRUSH), "Paint").clicked() {
                 edits.push(WallEdit::ZoneErase(false));
             }
@@ -2146,9 +2155,9 @@ impl FloorTab {
             }
         });
         let how = if floor.zone.is_empty() {
-            "Paint over the plan to mark where access points may go and coverage counts. Let the brush run a little over the walls. Join the end of a stroke to its start and the inside fills."
+            "Paint the area the access points should cover. Let the brush run a little over the walls. Join the end of a stroke to its start and the inside fills. Then press Optimise."
         } else {
-            "Only the painted area is used by the optimiser. Join the end of a stroke to its start to fill the inside."
+            "The saved area is shown. Paint or erase to change it, then press Optimise. Join the end of a stroke to its start to fill the inside."
         };
         ui.label(egui::RichText::new(how).color(r.on_surface_variant));
         let mut brush = self.zone_brush_m;
@@ -2156,8 +2165,6 @@ impl FloorTab {
         if theme::slider_f32(ui, &mut brush, 0.3..=4.0, 1, "Brush (m)") {
             edits.push(WallEdit::ZoneBrush(brush));
         }
-        let status = if floor.zone.is_empty() { "Nothing painted: the optimiser works the area out from the walls." } else { "The optimiser uses your painted area." };
-        ui.label(egui::RichText::new(status).color(r.on_surface_variant));
         ui.horizontal(|ui| {
             if ui.add_enabled_ui(!floor.zone.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
                 edits.push(WallEdit::ZoneUndo);
@@ -2166,6 +2173,20 @@ impl FloorTab {
                 edits.push(WallEdit::ZoneClear);
             }
         });
+        ui.horizontal(|ui| {
+            if ui.add_enabled_ui(!floor.zone.is_empty(), |ui| theme::button(ui, ButtonKind::Filled, Some(egui_material_icons::icons::ICON_AUTO_FIX_HIGH), "Optimise")).inner.clicked() {
+                edits.push(WallEdit::ZoneRun);
+            }
+            if theme::button(ui, ButtonKind::Text, Some(egui_material_icons::icons::ICON_CLOSE), "Cancel").clicked() {
+                edits.push(WallEdit::ZoneCancel);
+            }
+        });
+    }
+
+    /// Back to the tool in use before the area was painted.
+    fn leave_zone(&mut self) {
+        let back = self.zone_return.take().unwrap_or(Tool::Aps);
+        self.set_tool(back);
     }
 
     /// The brush radius in plan pixels.
@@ -3262,6 +3283,10 @@ impl FloorTab {
         } else if click && !busy {
             if self.optimised.is_some() {
                 self.undo_optimise();
+            } else if self.project.as_ref().is_some_and(|p| p.floor().metres_per_px.is_some()) {
+                // The area to work in comes first: paint it, then the optimiser runs.
+                self.zone_return = Some(self.tool);
+                self.set_tool(Tool::Zone);
             } else {
                 self.start_optimise(true);
             }
@@ -3517,6 +3542,7 @@ impl FloorTab {
         }
 
         if self.mode == WorkMode::Plan
+            && self.tool == Tool::Zone
             && let Some(tex) = &self.zone_tex
             && let Some(f) = self.project.as_ref().map(|p| p.floor())
         {
