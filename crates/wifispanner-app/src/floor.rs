@@ -21,7 +21,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_AUTO_FIX_HIGH, ICON_ADD, ICON_ARCHITECTURE, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_AUTO_FIX_HIGH, ICON_ADD, ICON_BRUSH, ICON_ARCHITECTURE, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -54,6 +54,8 @@ enum Tool {
     Aps,
     /// Draw obstacle areas (shelving, cars, foliage...).
     Obstacles,
+    /// Paint where the optimiser may place access points and count coverage.
+    Zone,
     /// Drop a simulated client on the plan and see how it would connect.
     Client,
 }
@@ -331,6 +333,13 @@ pub struct FloorTab {
     box_start: Option<Pos2>,
     /// A wall or obstacle area is being dragged (moved), not a box drawn.
     obj_drag: bool,
+    /// The Coverage tool: rubbing out instead of painting, the brush width in metres, the stroke
+    /// being drawn, and the picture of what is painted.
+    zone_erase: bool,
+    zone_brush_m: f32,
+    zone_stroke: Vec<[f32; 2]>,
+    zone_tex: Option<TextureHandle>,
+    zone_dirty: bool,
     /// The kind of object the Select tool works on: that of the tool it was chosen from (all when none).
     select_only: Option<Tool>,
     report_dialog: Option<report::OptionsDialog>,
@@ -430,6 +439,10 @@ enum WallEdit {
     Ceiling(f32),
     AutoScale,
     DetectWalls,
+    ZoneErase(bool),
+    ZoneBrush(f32),
+    ZoneUndo,
+    ZoneClear,
     Undo,
     Delete,
 }
@@ -523,6 +536,11 @@ impl Default for FloorTab {
             last_wall_edit: None,
             box_start: None,
             obj_drag: false,
+            zone_erase: false,
+            zone_brush_m: 1.0,
+            zone_stroke: Vec::new(),
+            zone_tex: None,
+            zone_dirty: true,
             select_only: None,
             report_dialog: None,
         }
@@ -756,6 +774,8 @@ impl FloorTab {
     fn after_floor_change(&mut self, ctx: &egui::Context) {
         self.floor_textures.clear();
         self.texture = self.project.as_ref().and_then(|p| decode_texture(ctx, &p.floor().image, "floor-plan"));
+        self.zone_dirty = true;
+        self.zone_stroke.clear();
         self.selected = None;
         self.pending = None;
         self.scale_clicks.clear();
@@ -1223,11 +1243,15 @@ impl FloorTab {
             (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
             (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
             (Tool::Aps, ICON_ROUTER, if survey { "Plot AP" } else { "Devices" }),
+            (Tool::Zone, ICON_BRUSH, "Coverage"),
             (Tool::Client, ICON_SMARTPHONE, "Client"),
             (Tool::Scale, ICON_STRAIGHTEN, "Scale"),
         ];
         let mut picked = None;
         for (tool, icon, label) in chips {
+            if tool == Tool::Zone && survey {
+                continue;
+            }
             if enabled && theme::chip(ui, current == tool, Some(icon), label).clicked() {
                 picked = Some(tool);
             }
@@ -1554,6 +1578,22 @@ impl FloorTab {
             }
             WallEdit::AutoScale => self.start_autoscale(),
             WallEdit::DetectWalls => self.start_wallscan(),
+            WallEdit::ZoneErase(e) => self.zone_erase = e,
+            WallEdit::ZoneBrush(m) => self.zone_brush_m = m,
+            WallEdit::ZoneUndo => {
+                if let Some(p) = self.project.as_mut() {
+                    p.floor_mut().zone.pop();
+                }
+                self.zone_dirty = true;
+                self.autosave();
+            }
+            WallEdit::ZoneClear => {
+                if let Some(p) = self.project.as_mut() {
+                    p.floor_mut().zone.clear();
+                }
+                self.zone_dirty = true;
+                self.autosave();
+            }
             WallEdit::Undo => self.undo_walls(),
             WallEdit::Delete => self.delete_selected_walls(),
             WallEdit::Ceiling(c) => {
@@ -1618,6 +1658,7 @@ impl FloorTab {
         self.poly_points.clear();
         self.ap_drag = None;
         self.box_start = None;
+        self.zone_stroke.clear();
         if tool == Tool::Scale {
             self.scale_clicks.clear();
         }
@@ -1710,7 +1751,7 @@ impl FloorTab {
     fn right_panel(&self, ctx: &egui::Context, canvas: Rect) -> (Vec<WallEdit>, Vec<ApEdit>) {
         let r = theme::roles(ctx);
         let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
-        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client | Tool::Scale) {
+        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Client | Tool::Scale) {
             return (walls_out, aps_out);
         }
         if self.tool == Tool::Aps && (self.mode == WorkMode::Survey || !self.devices_open) {
@@ -1752,6 +1793,7 @@ impl FloorTab {
                                 Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
                                 Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
+                                Tool::Zone => self.zone_content(ui, floor, &mut walls_out),
                                 Tool::Client => self.client_content(ui, floor, &mut walls_out),
                                 Tool::Scale => self.scale_content(ui, &mut walls_out),
                                 _ => {}
@@ -2089,6 +2131,95 @@ impl FloorTab {
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
         }
+    }
+
+    /// The coverage menu: brush, paint or erase, and what the paint is for.
+    fn zone_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.horizontal(|ui| {
+            ui.label(theme::heading(ui, "Coverage Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
+            if theme::chip(ui, !self.zone_erase, Some(ICON_BRUSH), "Paint").clicked() {
+                edits.push(WallEdit::ZoneErase(false));
+            }
+            if theme::chip(ui, self.zone_erase, Some(ICON_DELETE), "Erase").clicked() {
+                edits.push(WallEdit::ZoneErase(true));
+            }
+        });
+        let how = if floor.zone.is_empty() {
+            "Paint over the plan to mark where access points may go and coverage counts. Let the brush run a little over the walls. Join the end of a stroke to its start and the inside fills."
+        } else {
+            "Only the painted area is used by the optimiser. Join the end of a stroke to its start to fill the inside."
+        };
+        ui.label(egui::RichText::new(how).color(r.on_surface_variant));
+        let mut brush = self.zone_brush_m;
+        ui.spacing_mut().slider_width = 160.0;
+        if theme::slider_f32(ui, &mut brush, 0.3..=4.0, 1, "Brush (m)") {
+            edits.push(WallEdit::ZoneBrush(brush));
+        }
+        let status = if floor.zone.is_empty() { "Nothing painted: the optimiser works the area out from the walls." } else { "The optimiser uses your painted area." };
+        ui.label(egui::RichText::new(status).color(r.on_surface_variant));
+        ui.horizontal(|ui| {
+            if ui.add_enabled_ui(!floor.zone.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
+                edits.push(WallEdit::ZoneUndo);
+            }
+            if ui.add_enabled_ui(!floor.zone.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_DELETE), "Clear all")).inner.clicked() {
+                edits.push(WallEdit::ZoneClear);
+            }
+        });
+    }
+
+    /// The brush radius in plan pixels.
+    fn zone_radius_px(&self) -> f32 {
+        let mpp = self.project.as_ref().and_then(|p| p.floor().metres_per_px).filter(|m| *m > 0.0);
+        self.zone_brush_m / mpp.unwrap_or(0.05) / 2.0
+    }
+
+    /// Paint or rub out with the primary button; a click makes a dot.
+    fn zone_input(&mut self, resp: &egui::Response, to_plan: &impl Fn(Pos2) -> Pos2, size: (f32, f32)) {
+        let radius = self.zone_radius_px();
+        let point = |pos: Pos2| {
+            let p = to_plan(pos);
+            [p.x.clamp(0.0, size.0), p.y.clamp(0.0, size.1)]
+        };
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            self.zone_stroke.clear();
+        }
+        if resp.dragged_by(egui::PointerButton::Primary)
+            && let Some(p) = resp.interact_pointer_pos().map(point)
+            && self.zone_stroke.last().is_none_or(|l| ((l[0] - p[0]).powi(2) + (l[1] - p[1]).powi(2)).sqrt() >= radius * 0.25)
+        {
+            self.zone_stroke.push(p);
+        }
+        let finished = resp.drag_stopped_by(egui::PointerButton::Primary);
+        if resp.clicked_by(egui::PointerButton::Primary)
+            && let Some(p) = resp.interact_pointer_pos().map(point)
+        {
+            self.zone_stroke = vec![p];
+        }
+        if (finished || resp.clicked_by(egui::PointerButton::Primary)) && !self.zone_stroke.is_empty() {
+            let points = std::mem::take(&mut self.zone_stroke);
+            let closed = wifispanner_core::coverage::Stroke::closes(&points, radius);
+            if let Some(p) = self.project.as_mut() {
+                p.floor_mut().zone.push(wifispanner_core::coverage::Stroke { points, radius, erase: self.zone_erase, closed });
+            }
+            self.zone_dirty = true;
+            self.autosave();
+        }
+    }
+
+    /// The picture of the painted area, drawn over the plan.
+    fn rebuild_zone_texture(&mut self, ctx: &egui::Context) {
+        self.zone_dirty = false;
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
+        if floor.zone.is_empty() {
+            self.zone_tex = None;
+            return;
+        }
+        let mask = wifispanner_core::coverage::Mask::from_strokes(&floor.zone, floor.width_px as f32, floor.height_px as f32);
+        let paint = Color32::from_rgba_unmultiplied(0, 150, 140, 90);
+        let pixels = mask.cells.iter().map(|on| if *on { paint } else { Color32::TRANSPARENT }).collect();
+        let image = egui::ColorImage { size: [mask.w, mask.h], source_size: Vec2::new(mask.w as f32, mask.h as f32), pixels };
+        self.zone_tex = Some(ctx.load_texture("coverage_zone", image, TextureOptions::NEAREST));
     }
 
     /// How the simulated client at `pos` would connect: for each band it can use,
@@ -3215,7 +3346,7 @@ impl FloorTab {
         // middle or right button then.
         let panning = if self.tool == Tool::Aps {
             resp.dragged() && self.ap_drag.is_none()
-        } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::Client) {
+        } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::Client | Tool::Zone) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
             resp.dragged() && !self.obj_drag
@@ -3313,6 +3444,8 @@ impl FloorTab {
         } else if self.tool == Tool::Obstacles {
             self.object_drag(&resp, ui, zoom, &to_plan, &to_screen, false, true, false);
             self.area_input(&resp, ui, zoom, &to_plan, (img_w, img_h));
+        } else if self.tool == Tool::Zone {
+            self.zone_input(&resp, &to_plan, (img_w, img_h));
         } else if self.tool == Tool::Client {
             self.client_input(&resp, &to_plan, (img_w, img_h));
         } else if self.tool == Tool::Aps {
@@ -3325,6 +3458,9 @@ impl FloorTab {
 
         if self.mode == WorkMode::Survey && self.show_heat && self.heat_dirty {
             self.rebuild_heat(ui.ctx());
+        }
+        if self.zone_dirty {
+            self.rebuild_zone_texture(ui.ctx());
         }
         if self.mode == WorkMode::Plan && self.show_pred && self.pred_dirty && !self.ap_drag.is_some() {
             self.rebuild_prediction(ui.ctx());
@@ -3380,6 +3516,15 @@ impl FloorTab {
             painter.image(heat.id(), plan_rect, uv, Color32::from_white_alpha((self.opacity * 255.0) as u8));
         }
 
+        if self.mode == WorkMode::Plan
+            && let Some(tex) = &self.zone_tex
+            && let Some(f) = self.project.as_ref().map(|p| p.floor())
+        {
+            let cell = (f.width_px.max(f.height_px) as f32 / 400.0).max(1.0);
+            let (w, h) = ((f.width_px as f32 / cell).ceil() * cell, (f.height_px as f32 / cell).ceil() * cell);
+            let area = Rect::from_min_max(to_screen(Pos2::ZERO), to_screen(Pos2::new(w, h)));
+            painter.image(tex.id(), area, uv, Color32::WHITE);
+        }
         let floor = self.project.as_ref().expect("checked above").floor();
         let ceiling = floor.ceiling_m;
         for (i, area) in floor.areas.iter().enumerate() {
@@ -3440,6 +3585,17 @@ impl FloorTab {
             let boxed = Rect::from_two_pos(to_screen(a), b);
             let accent = theme::roles(ui.ctx()).primary;
             painter.rect(boxed, 2.0, accent.gamma_multiply(0.15), Stroke::new(1.5, accent), egui::StrokeKind::Inside);
+        }
+        if self.tool == Tool::Zone {
+            let colour = if self.zone_erase { Color32::from_rgb(220, 60, 60) } else { Color32::from_rgb(0, 150, 140) };
+            let radius = self.zone_radius_px() * zoom;
+            if self.zone_stroke.len() > 1 {
+                let line: Vec<Pos2> = self.zone_stroke.iter().map(|p| to_screen(Pos2::new(p[0], p[1]))).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(radius * 2.0, colour.gamma_multiply(0.35))));
+            }
+            if let Some(hover) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)) {
+                painter.circle(hover, radius, colour.gamma_multiply(0.2), Stroke::new(1.5, colour));
+            }
         }
         if self.tool == Tool::Obstacles
             && let Some(hover) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p))
@@ -3571,7 +3727,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Obstacles | Tool::Client => {}
+            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Obstacles | Tool::Zone | Tool::Client => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
