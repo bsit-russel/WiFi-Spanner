@@ -1797,6 +1797,8 @@ impl FloorTab {
                     .show(ui, |ui| {
                         // Narrow, and no taller than 1.5 times the width: past that the menu scrolls.
                         let width = panel_width(ctx);
+                        ui.set_width(width);
+                        ui.set_max_width(width);
                         egui::ScrollArea::vertical().max_height(width * 1.5).auto_shrink([false, true]).show(ui, |ui| match self.tool {
                         Tool::Aps => {
                             // Only the list of models scrolls: seven rows, as far as the window allows.
