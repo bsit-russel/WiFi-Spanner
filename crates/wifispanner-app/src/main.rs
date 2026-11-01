@@ -27,7 +27,7 @@ use eframe::egui;
 use settings::Settings;
 use theme::ButtonKind;
 use egui_material_icons::icons::{
-    ICON_CLOSE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
+    ICON_CLOSE, ICON_CONTENT_COPY, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_HELP, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
     ICON_SYSTEM_UPDATE, ICON_VIEW_LIST, ICON_WIFI,
 };
 use wifispanner_scan::dwell::scan_for_many;
@@ -39,6 +39,7 @@ const BYTE_SIZE_PNG: &[u8] = include_bytes!("../../../assets/byte-size-it.png");
 const BYTE_SIZE_NAME: &str = "Byte Size IT";
 const BYTE_SIZE_URL: &str = "https://byte-size.co.za";
 const BYTE_SIZE_SITE: &str = "byte-size.co.za";
+const SUPPORT_EMAIL: &str = "dev@byte-size.co.za";
 /// Size of the splash card, drawn in the middle of the (see-through) window.
 const SPLASH_SIZE: [f32; 2] = [560.0, 390.0];
 /// Corner radius of the splash card, in points.
@@ -234,6 +235,7 @@ struct App {
     cards: Vec<WifiCard>,
     settings_open: bool,
     about_open: bool,
+    help_open: bool,
     update_rx: Option<Receiver<(bool, Result<Option<update::UpdateInfo>, String>)>>,
     /// A newer release found, shown in a bar until dismissed.
     update_notice: Option<update::UpdateInfo>,
@@ -291,6 +293,7 @@ impl App {
             cards,
             settings_open: false,
             about_open: false,
+            help_open: false,
             update_rx: None,
             update_notice: None,
             update_message: None,
@@ -403,6 +406,9 @@ impl App {
         ui.separator();
         if ui.add(theme::menu_entry(ui, Some(ICON_SYSTEM_UPDATE), "Check for updates")).clicked() {
             *action = Some(MenuAction::CheckUpdates);
+        }
+        if ui.add(theme::menu_entry(ui, Some(ICON_HELP), "Get help...")).clicked() {
+            self.help_open = true;
         }
         if ui.add(theme::menu_entry(ui, Some(ICON_INFO), "About...")).clicked() {
             self.about_open = true;
@@ -800,6 +806,44 @@ impl App {
         }
     }
 
+    /// Where to report a bug, ask for a feature or get help, with the details worth including.
+    fn help_window(&mut self, ctx: &egui::Context) {
+        if !self.help_open {
+            return;
+        }
+        let mut close = false;
+        theme::dialog(ctx, "Get help", 420.0, |ui| {
+            ui.label("Found a bug, want a new feature, or need a hand? Email us:");
+            ui.add_space(4.0);
+            let subject = format!("WiFi Spanner {} feedback", env!("CARGO_PKG_VERSION")).replace(' ', "%20");
+            ui.hyperlink_to(SUPPORT_EMAIL, format!("mailto:{SUPPORT_EMAIL}?subject={subject}"));
+            ui.add_space(8.0);
+            ui.label("It helps to include:");
+            ui.label("  - what you did, what you expected and what happened");
+            ui.label("  - the version and system below");
+            ui.label("  - a screenshot, if it is something you can see");
+            ui.add_space(8.0);
+            ui.weak(support_details());
+            ui.add_space(6.0);
+            ui.weak("Please do not send survey projects that contain private network details unless asked to.");
+            ui.hyperlink_to(BYTE_SIZE_SITE, BYTE_SIZE_URL);
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Text, Some(ICON_CLOSE), "Close").clicked() {
+                    close = true;
+                }
+                if theme::button(ui, ButtonKind::Tonal, Some(ICON_CONTENT_COPY), "Copy details").clicked() {
+                    ui.ctx().copy_text(support_details());
+                }
+                if theme::button(ui, ButtonKind::Tonal, Some(ICON_CONTENT_COPY), "Copy email").clicked() {
+                    ui.ctx().copy_text(SUPPORT_EMAIL.to_owned());
+                }
+            });
+        });
+        if close {
+            self.help_open = false;
+        }
+    }
+
     fn about_window(&mut self, ctx: &egui::Context) {
         if !self.about_open {
             return;
@@ -828,6 +872,9 @@ impl App {
                 if let Some(logo) = &self.byte_size_logo {
                     ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(40.0)));
                 }
+                ui.add_space(6.0);
+                ui.weak("Bugs and feature requests:");
+                ui.hyperlink_to(SUPPORT_EMAIL, format!("mailto:{SUPPORT_EMAIL}"));
             });
             theme::actions(ui, |ui| {
                 if theme::button(ui, ButtonKind::Text, Some(ICON_CLOSE), "Close").clicked() {
@@ -1032,6 +1079,7 @@ impl eframe::App for App {
         self.update_notice_bar(ui);
         self.settings_dialog(ui.ctx());
         self.about_window(ui.ctx());
+        self.help_window(ui.ctx());
         self.update_message_window(ui.ctx());
         self.install_window(ui.ctx());
         self.launcher_prompt_window(ui.ctx());
@@ -1143,6 +1191,15 @@ fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let img = image::load_from_memory(LOGO_PNG).ok()?.resize(256, 256, image::imageops::FilterType::Lanczos3).to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
     Some(ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()), egui::TextureOptions::LINEAR))
+}
+
+/// The version and system, for pasting into a bug report.
+fn support_details() -> String {
+    let system = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_owned())))
+        .unwrap_or_else(|| std::env::consts::OS.to_owned());
+    format!("WiFi Spanner {} on {system} ({})", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH)
 }
 
 fn byte_size_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {

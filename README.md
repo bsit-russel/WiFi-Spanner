@@ -52,6 +52,10 @@ cargo run -p wifispanner-app
 The AppImage is built on Linux only (`packaging/build-appimage.sh`), by CI on
 every push to `main`.
 
+## Reporting issues
+
+Found a bug or want a feature? Email [dev@byte-size.co.za](mailto:dev@byte-size.co.za). The app's menu has a *Get help...* window with the details worth including.
+
 ## Licence
 
 Copyright (C) 2026 Byte Size IT.
