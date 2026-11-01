@@ -133,6 +133,37 @@ impl Mask {
     }
 }
 
+/// Walls needed before access points are held to standing between them: fewer than this and the
+/// plan has no premises drawn yet.
+const WALLS_TO_JUDGE: usize = 4;
+
+/// May an access point stand at `p` (plan pixels)? Not when the plan has walls and `p` is
+/// outside them: see [`between_walls`].
+pub fn may_place(walls: &[crate::walls::Wall], p: [f32; 2]) -> bool {
+    walls.len() < WALLS_TO_JUDGE || between_walls(walls, p)
+}
+
+/// Is there a wall on both sides of `p` along the same line, either left and right or above and
+/// below? A point in a room that is open on one side still has walls either side of it, while a
+/// point outside the building has them on one side only.
+pub fn between_walls(walls: &[crate::walls::Wall], p: [f32; 2]) -> bool {
+    let hit = |dir: [f32; 2]| walls.iter().any(|w| ray_hits(p, dir, w.a, w.b));
+    (hit([1.0, 0.0]) && hit([-1.0, 0.0])) || (hit([0.0, 1.0]) && hit([0.0, -1.0]))
+}
+
+/// Does the ray from `p` along `dir` cross the segment `a` to `b`?
+fn ray_hits(p: [f32; 2], dir: [f32; 2], a: [f32; 2], b: [f32; 2]) -> bool {
+    let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+    let denom = dir[0] * ey - dir[1] * ex;
+    if denom.abs() < 1e-6 {
+        return false;
+    }
+    let (qx, qy) = (a[0] - p[0], a[1] - p[1]);
+    let t = (qx * ey - qy * ex) / denom;
+    let s = (qx * dir[1] - qy * dir[0]) / denom;
+    t >= 0.0 && (0.0..=1.0).contains(&s)
+}
+
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
@@ -198,6 +229,22 @@ mod tests {
         assert!(Stroke::closes(&ring, 4.0));
         assert!(!Stroke::closes(&ring[..12], 4.0));
         assert!(!Stroke::closes(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]], 4.0));
+    }
+
+    #[test]
+    fn standing_between_walls_needs_walls_either_side_even_when_not_enclosed() {
+        use crate::walls::Wall;
+        use crate::Material;
+        let w = |a: [f32; 2], b: [f32; 2]| Wall::new(a, b, Material::Concrete);
+        // A room with its right side open: walls on the left, top and bottom.
+        let walls = [w([0.0, 0.0], [0.0, 100.0]), w([0.0, 0.0], [100.0, 0.0]), w([0.0, 100.0], [100.0, 100.0]), w([300.0, 0.0], [300.0, 100.0])];
+        assert!(between_walls(&walls, [50.0, 50.0]));
+        assert!(between_walls(&walls, [200.0, 50.0]));
+        assert!(!between_walls(&walls, [-40.0, 50.0]));
+        assert!(!between_walls(&walls, [50.0, 160.0]));
+        assert!(!between_walls(&walls, [500.0, 50.0]));
+        // No premises drawn yet: nothing to be outside of.
+        assert!(may_place(&walls[..2], [900.0, 900.0]) && !may_place(&walls, [500.0, 50.0]));
     }
 
     #[test]

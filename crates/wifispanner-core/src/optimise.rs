@@ -118,6 +118,11 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32, goal: &Goal) -> Res
         samples = whole(SAMPLES_ACROSS);
         spots = whole(SPOTS_ACROSS);
     }
+    // Only between walls, even where a room is not closed: never outside the premises.
+    let inside: Vec<[f32; 2]> = spots.iter().copied().filter(|p| crate::coverage::may_place(&floor.walls, *p)).collect();
+    if !inside.is_empty() {
+        spots = inside;
+    }
     // Not on or right beside a wall (unless that leaves nowhere to stand).
     let clear = WALL_CLEARANCE_M / mpp;
     let off_walls: Vec<[f32; 2]> = spots.iter().copied().filter(|p| floor.walls.iter().all(|w| distance_to_segment(*p, w.a, w.b) >= clear)).collect();

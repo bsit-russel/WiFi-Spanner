@@ -2561,10 +2561,14 @@ impl FloorTab {
             let moving = self.aps_selected.clone();
             let planning = self.mode == WorkMode::Plan;
             if let Some(p) = self.project.as_mut() {
+                let walls = p.floor().walls.clone();
                 for i in moving {
                     if let Some(a) = p.floor_mut().layer_mut(planning).get_mut(i) {
-                        a.x = (a.x + d.x).clamp(0.0, size.0);
-                        a.y = (a.y + d.y).clamp(0.0, size.1);
+                        // An access point stays between the walls: a step outside them is not taken.
+                        let (x, y) = ((a.x + d.x).clamp(0.0, size.0), (a.y + d.y).clamp(0.0, size.1));
+                        if wifispanner_core::coverage::may_place(&walls, [x, y]) {
+                            (a.x, a.y) = (x, y);
+                        }
                     }
                 }
             }
@@ -2600,7 +2604,10 @@ impl FloorTab {
                 }
                 (None, _) => {
                     let p = to_plan(click);
-                    if p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1 {
+                    let allowed = self.project.as_ref().is_none_or(|pr| wifispanner_core::coverage::may_place(&pr.floor().walls, [p.x, p.y]));
+                    if !allowed {
+                        self.status = "Access points go between walls, not outside the premises.".into();
+                    } else if p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1 {
                         let planning = self.mode == WorkMode::Plan;
                         // Installed access points are plotted bare: their model and settings are not known while surveying.
                         let template = if planning { self.ap_template.clone() } else { PlannedAp::new(String::new(), 0.0, 0.0) };
