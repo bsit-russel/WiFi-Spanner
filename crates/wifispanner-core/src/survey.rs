@@ -152,6 +152,10 @@ pub struct Floor {
     /// Areas that absorb signal (shelving, cars, foliage...).
     #[serde(default)]
     pub areas: Vec<crate::obstacles::Area>,
+    /// Where the optimiser may place access points and counts coverage, painted by the user.
+    /// Empty means it works the area out from the walls.
+    #[serde(default)]
+    pub zone: Vec<crate::coverage::Stroke>,
 }
 
 impl Floor {
@@ -373,7 +377,7 @@ mod tests {
     }
 
     fn blank(name: &str, mpp: Option<f32>) -> Floor {
-        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![], survey_aps: vec![], areas: vec![] }
+        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![], survey_aps: vec![], areas: vec![], zone: vec![] }
     }
 
     #[test]
@@ -511,6 +515,7 @@ mod tests {
             aps: vec![],
             survey_aps: vec![],
             areas: vec![],
+            zone: vec![],
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();
         assert_eq!(back.floor().walls.len(), 1);

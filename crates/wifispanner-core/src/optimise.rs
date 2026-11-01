@@ -12,6 +12,7 @@
 //! count for a lot, and signal beyond the target adds nothing, so access points spread out
 //! instead of piling up on the strongest spot.
 
+use crate::coverage::Mask;
 use crate::predict::{scene, signal_from, PlannedAp, Unavailable};
 use crate::survey::Floor;
 use wifispanner_scan::Band;
@@ -93,7 +94,8 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32, goal: &Goal) -> Res
         return Err(Unavailable::NoAps);
     }
     // Only the floor plan itself counts: the part of the page inside the walls, not its margins.
-    let zone = safe_zone(floor, mpp);
+    let painted = painted_mask(floor);
+    let zone = painted.as_ref().and_then(painted_zone).or_else(|| if painted.is_some() { None } else { safe_zone(floor, mpp) });
     let (min, max) = zone.as_ref().map_or(([0.0, 0.0], [floor.width_px as f32, floor.height_px as f32]), |z| (z.min, z.max));
     let (span_x, span_y) = ((max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0));
     let longest = span_x.max(span_y);
@@ -122,7 +124,11 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32, goal: &Goal) -> Res
     if !off_walls.is_empty() {
         spots = off_walls;
     }
-    let walls = scene(floor, mpp, band);
+    let mut walls = scene(floor, mpp, band);
+    // With an area painted, only the walls it reaches count: the paint bleeds a little over them.
+    if let Some(mask) = &painted {
+        walls.retain_walls(|a, b| mask.touches_line([a[0] / mpp, a[1] / mpp], [b[0] / mpp, b[1] / mpp]));
+    }
     let at = |ap: &PlannedAp, eirp: f32, xy: [f32; 2], s: [f32; 2]| signal_from(ap, eirp, [xy[0] * mpp, xy[1] * mpp], [s[0] * mpp, s[1] * mpp, rx_height_m], &walls, band);
 
     // signal[m][spot][sample]
@@ -315,6 +321,23 @@ impl Zone {
         let (x, y) = (x as usize, y as usize);
         x < self.w && y * self.w + x < grid.len() && grid[y * self.w + x]
     }
+}
+
+/// The area painted on the plan, if there is any.
+fn painted_mask(floor: &Floor) -> Option<Mask> {
+    if floor.zone.is_empty() {
+        return None;
+    }
+    Some(Mask::from_strokes(&floor.zone, floor.width_px as f32, floor.height_px as f32)).filter(|m| !m.is_empty())
+}
+
+/// The painted area as the zone the optimiser works in: the same cells for coverage and standing.
+fn painted_zone(mask: &Mask) -> Option<Zone> {
+    let (min, max) = mask.bounds()?;
+    let (x0, y0) = ((min[0] / mask.cell).round() as usize, (min[1] / mask.cell).round() as usize);
+    let (w, h) = (((max[0] - min[0]) / mask.cell).round() as usize, ((max[1] - min[1]) / mask.cell).round() as usize);
+    let cells: Vec<bool> = (0..w * h).map(|i| mask.cells[(y0 + i / w) * mask.w + x0 + i % w]).collect();
+    Some(Zone { min, max, cell: mask.cell, w, inside: cells.clone(), placing: cells, hull: None })
 }
 
 /// The part of the plan inside the main group of walls, or `None` when there are too few walls to tell.
@@ -562,6 +585,7 @@ mod tests {
             aps,
             survey_aps: vec![],
             areas: vec![],
+            zone: vec![],
         }
     }
 
@@ -659,6 +683,23 @@ mod tests {
         f.walls.extend([w([60.0, 150.0], [160.0, 150.0]), w([60.0, 350.0], [160.0, 350.0]), w([60.0, 150.0], [60.0, 350.0]), w([160.0, 150.0], [160.0, 350.0])]);
         let zone = safe_zone(&f, 0.1).unwrap();
         assert!(zone.contains([100.0, 250.0]) && zone.contains([400.0, 250.0]));
+    }
+
+    #[test]
+    fn a_painted_area_is_the_only_place_access_points_go() {
+        use crate::coverage::Stroke;
+        let mut f = house(false);
+        let (w, h) = (f.width_px as f32, f.height_px as f32);
+        // Paint a loop round the left third of the plan: the inside fills.
+        let (x0, x1, y0, y1) = (20.0, w / 3.0, 20.0, h - 20.0);
+        let ring = vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+        f.zone = vec![Stroke { points: ring, radius: 4.0, erase: false, closed: true }];
+        f.aps = vec![PlannedAp::new("a".into(), w * 0.8, h * 0.5), PlannedAp::new("b".into(), w * 0.9, h * 0.2)];
+        let out = optimise(&f, Band::Ghz5, 1.0, &Goal::default()).unwrap();
+        assert!(!out.moves.is_empty());
+        for m in &out.moves {
+            assert!(m.1[0] <= x1 + 4.0 && m.1[0] >= x0 - 4.0 && m.1[1] >= y0 - 4.0 && m.1[1] <= y1 + 4.0, "moved outside the painted area: {m:?}");
+        }
     }
 
     #[test]

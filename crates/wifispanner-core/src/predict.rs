@@ -205,6 +205,13 @@ pub(crate) struct Scene {
     areas: Vec<(Area, f32, f32)>,
 }
 
+impl Scene {
+    /// Keep only the walls for which `keep` holds, given each one's ends in metres.
+    pub(crate) fn retain_walls(&mut self, keep: impl Fn([f32; 2], [f32; 2]) -> bool) {
+        self.walls.retain(|w| keep(w.a, w.b));
+    }
+}
+
 pub(crate) fn scene(floor: &Floor, mpp: f32, band: Band) -> Scene {
     let areas = floor
         .areas
@@ -356,6 +363,7 @@ mod tests {
             aps,
             survey_aps: vec![],
             areas: vec![],
+            zone: vec![],
         }
     }
 

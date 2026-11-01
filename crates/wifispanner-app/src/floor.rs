@@ -623,7 +623,7 @@ impl FloorTab {
             Ok(d) => d,
             Err(e) => return self.status = format!("Not a usable image: {e}"),
         };
-        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new() };
+        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new(), zone: Vec::new() };
         if std::mem::take(&mut self.adding_floor)
             && let Some(p) = self.project.as_mut()
         {

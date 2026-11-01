@@ -236,6 +236,7 @@ mod tests {
             aps,
             survey_aps: vec![],
             areas: vec![],
+            zone: vec![],
         }
     }
 

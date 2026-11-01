@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod channels;
+pub mod coverage;
 pub mod floors;
 pub mod heatmap;
 pub mod obstacles;
