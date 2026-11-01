@@ -3086,7 +3086,7 @@ impl FloorTab {
     fn suggestion_dialog(&mut self, ctx: &egui::Context) {
         let Some(s) = &self.suggestion else { return };
         let n = s.extra.len();
-        let (mut add, mut close) = (false, false);
+        let (mut add, mut close, mut repaint) = (false, false, false);
         let percent = |v: f32| (v * 100.0).round() as i32;
         let rows: Vec<(String, Vec<wifispanner_core::predict::Channel>)> = self
             .project
@@ -3138,8 +3138,16 @@ impl FloorTab {
                 if theme::button(ui, if n > 0 { ButtonKind::Text } else { ButtonKind::Filled }, None, if n > 0 { "Not now" } else { "Done" }).clicked() {
                     close = true;
                 }
+                if theme::button(ui, ButtonKind::Text, Some(ICON_BRUSH), "Change area").on_hover_text("Paint the area the optimiser works in again.").clicked() {
+                    close = true;
+                    repaint = true;
+                }
             });
         });
+        if repaint {
+            self.zone_return = Some(self.tool);
+            self.set_tool(Tool::Zone);
+        }
         let options = self.view.plan_options();
         if add && let Some(s) = self.suggestion.as_mut() {
             let (extra, template_id) = (std::mem::take(&mut s.extra), s.template_id);
@@ -3290,8 +3298,9 @@ impl FloorTab {
         } else if click && !busy {
             if self.optimised.is_some() {
                 self.undo_optimise();
-            } else if self.project.as_ref().is_some_and(|p| p.floor().metres_per_px.is_some()) {
-                // The area to work in comes first: paint it, then the optimiser runs.
+            } else if self.project.as_ref().is_some_and(|p| p.floor().metres_per_px.is_some() && p.floor().zone.is_empty()) {
+                // The area to work in comes first: paint it, then the optimiser runs. Once painted
+                // it is remembered with the project, and the optimiser goes straight to work.
                 self.zone_return = Some(self.tool);
                 self.set_tool(Tool::Zone);
             } else {
