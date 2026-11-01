@@ -35,8 +35,12 @@ use wifispanner_scan::iw::WifiCard;
 use wifispanner_scan::{ScanResult, Scanner, default_scanner, list_cards};
 
 const LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo.png");
+const BYTE_SIZE_PNG: &[u8] = include_bytes!("../../../assets/byte-size-it.png");
+const BYTE_SIZE_NAME: &str = "Byte Size IT";
+const BYTE_SIZE_URL: &str = "https://byte-size.co.za";
+const BYTE_SIZE_SITE: &str = "byte-size.co.za";
 /// Size of the splash card, drawn in the middle of the (see-through) window.
-const SPLASH_SIZE: [f32; 2] = [560.0, 340.0];
+const SPLASH_SIZE: [f32; 2] = [560.0, 390.0];
 /// Corner radius of the splash card, in points.
 const SPLASH_RADIUS: f32 = 50.0;
 /// Default size of the main window when none has been saved yet.
@@ -254,6 +258,7 @@ struct App {
     toast: Option<(String, std::time::Instant)>,
     settings_section: settings_ui::Section,
     logo: Option<egui::TextureHandle>,
+    byte_size_logo: Option<egui::TextureHandle>,
     /// Set while the splash is showing.
     splash_since: Option<std::time::Instant>,
     scanner_ready: bool,
@@ -303,6 +308,7 @@ impl App {
             pen_pos: egui::Pos2::ZERO,
             toast: None,
             settings_section: settings_ui::Section::default(),
+            byte_size_logo: byte_size_texture(&ctx_for_logo),
             logo: logo_texture(&ctx_for_logo),
             splash_since: Some(std::time::Instant::now()),
             scanner_ready: false,
@@ -816,6 +822,12 @@ impl App {
                      terms (see NOTICE). This program comes with ABSOLUTELY NO WARRANTY.",
                 );
                 ui.hyperlink_to("GNU General Public License", "https://www.gnu.org/licenses/gpl-3.0.html");
+                ui.add_space(10.0);
+                ui.weak(format!("by {BYTE_SIZE_NAME}"));
+                ui.hyperlink_to(BYTE_SIZE_SITE, BYTE_SIZE_URL);
+                if let Some(logo) = &self.byte_size_logo {
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(40.0)));
+                }
             });
             theme::actions(ui, |ui| {
                 if theme::button(ui, ButtonKind::Text, Some(ICON_CLOSE), "Close").clicked() {
@@ -946,7 +958,7 @@ impl eframe::App for App {
                     }
                 }
             } else {
-                draw_splash(ui, self.logo.as_ref());
+                draw_splash(ui, self.logo.as_ref(), self.byte_size_logo.as_ref());
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
                 return;
             }
@@ -1133,6 +1145,12 @@ fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     Some(ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()), egui::TextureOptions::LINEAR))
 }
 
+fn byte_size_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(BYTE_SIZE_PNG).ok()?.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    Some(ctx.load_texture("byte_size_logo", egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()), egui::TextureOptions::LINEAR))
+}
+
 fn window_icon() -> egui::IconData {
     match image::load_from_memory(LOGO_PNG) {
         Ok(img) => {
@@ -1143,7 +1161,7 @@ fn window_icon() -> egui::IconData {
     }
 }
 
-fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
+fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>, byte_size: Option<&egui::TextureHandle>) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
         let window = ui.max_rect();
         let rect = egui::Rect::from_center_size(
@@ -1172,7 +1190,7 @@ fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
         }
         painter.add(egui::Shape::mesh(mesh));
 
-        let c = rect.center();
+        let c = rect.center() - egui::vec2(0.0, 25.0);
         if let Some(logo) = logo {
             let r = egui::Rect::from_center_size(c - egui::vec2(0.0, 62.0), egui::Vec2::splat(112.0));
             painter.image(logo.id(), r, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
@@ -1183,8 +1201,15 @@ fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
             painter.text(c + egui::vec2(1.5, y + 1.5), egui::Align2::CENTER_CENTER, text, font.clone(), shadow);
             painter.text(c + egui::vec2(0.0, y), egui::Align2::CENTER_CENTER, text, font, egui::Color32::WHITE);
         }
+        let soft = egui::Color32::from_white_alpha(215);
+        painter.text(c + egui::vec2(0.0, 128.0), egui::Align2::CENTER_CENTER, format!("by {BYTE_SIZE_NAME}"), egui::FontId::proportional(13.0), soft);
+        painter.text(c + egui::vec2(0.0, 145.0), egui::Align2::CENTER_CENTER, BYTE_SIZE_SITE, egui::FontId::proportional(12.0), egui::Color32::from_white_alpha(170));
+        if let Some(byte_size) = byte_size {
+            let r = egui::Rect::from_center_size(c + egui::vec2(0.0, 176.0), egui::Vec2::splat(30.0));
+            painter.image(byte_size.id(), r, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
         painter.text(
-            rect.center_bottom() - egui::vec2(0.0, 18.0),
+            rect.center_bottom() - egui::vec2(0.0, 14.0),
             egui::Align2::CENTER_CENTER,
             "Loading...",
             egui::FontId::proportional(12.0),
