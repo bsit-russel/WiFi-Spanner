@@ -134,8 +134,8 @@ pub fn plan(floor: &Floor, options: &PlanOptions) -> Plan {
         }
         for i in 0..indices.len() {
             for j in i + 1..indices.len() {
-                // Heard better than -82 dBm (10 dB over the cut-off) and on the same channel.
-                if assigned[i] == assigned[j] && weights[i][j] >= 10.0 {
+                // Heard better than -85 dBm (7 dB over the cut-off) and on the same channel: their cells overlap.
+                if assigned[i] == assigned[j] && weights[i][j] >= 7.0 {
                     shared.push((indices[i], indices[j], band));
                 }
             }
@@ -287,6 +287,24 @@ mod tests {
         let c5 = |i| channel(&p, i, RadioBand::Ghz5);
         assert_ne!(c5(0), c5(1));
         assert_ne!(c5(1), c5(2));
+    }
+
+    #[test]
+    fn every_channel_planned_belongs_to_the_pool_of_its_width() {
+        let aps = || vec![PlannedAp::new("a".into(), 100.0, 200.0), PlannedAp::new("b".into(), 400.0, 200.0), PlannedAp::new("c".into(), 700.0, 200.0), PlannedAp::new("d".into(), 900.0, 200.0)];
+        // Minimise interference (20/40/80) and max speed (20/80/320), with and without DFS.
+        for (w, dfs) in [((20, 40, 80), false), ((20, 80, 320), false), ((20, 40, 80), true), ((20, 80, 320), true)] {
+            let o = PlanOptions { width_2_4: w.0, width_5: w.1, width_6: w.2, allow_dfs: dfs };
+            let p = plan(&floor(aps()), &o);
+            for (_, chans) in &p.assignments {
+                for c in chans {
+                    let width = p.widths.iter().find(|x| x.0 == c.band).unwrap().1;
+                    assert!(pool(c.band, &o, 3).0.contains(&c.number) || width < o.width(c.band), "{c:?} at {width} MHz");
+                }
+            }
+            // One width per band for every access point, so channels never overlap each other.
+            assert_eq!(p.widths.len(), 3);
+        }
     }
 
     #[test]

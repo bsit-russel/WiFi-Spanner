@@ -342,6 +342,8 @@ pub struct FloorTab {
     zone_dirty: bool,
     /// The tool to go back to once the area is painted for the optimiser.
     zone_return: Option<Tool>,
+    /// The channel plan profile picked in the report; until then the widths in Settings apply.
+    plan_profile: Option<PlanProfile>,
     /// The kind of object the Select tool works on: that of the tool it was chosen from (all when none).
     select_only: Option<Tool>,
     report_dialog: Option<report::OptionsDialog>,
@@ -451,6 +453,25 @@ enum WallEdit {
     Delete,
 }
 
+/// What the channel plan favours, chosen in the optimiser's report.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlanProfile {
+    /// Narrow channels: the most separate channels and the least interference.
+    Interference,
+    /// Wide channels: the most speed, with fewer channels to go round.
+    Speed,
+}
+
+impl PlanProfile {
+    /// The channel widths (MHz) on 2.4, 5 and 6 GHz.
+    fn widths(self) -> (u32, u32, u32) {
+        match self {
+            PlanProfile::Interference => (20, 40, 80),
+            PlanProfile::Speed => (20, 80, 320),
+        }
+    }
+}
+
 /// The footnote on everything the optimiser shows.
 const OPTIMISER_NOTE: &str = "Experimental feature: the optimiser's suggestions are a guide, not a guarantee. Check them against a real survey.";
 
@@ -555,6 +576,7 @@ impl Default for FloorTab {
             zone_tex: None,
             zone_dirty: true,
             zone_return: None,
+            plan_profile: None,
             select_only: None,
             report_dialog: None,
         }
@@ -1802,7 +1824,10 @@ impl FloorTab {
                         let width = panel_width(ctx);
                         ui.set_width(width);
                         ui.set_max_width(width);
-                        egui::ScrollArea::vertical().max_height(width * 1.5).auto_shrink([false, true]).show(ui, |ui| match self.tool {
+                        let content_id = egui::Id::NULL.with("right_panel_content");
+                        let natural = ctx.data(|d| d.get_temp::<f32>(content_id)).unwrap_or(0.0);
+                        let max_height = width * 1.5;
+                        let mut body = |ui: &mut egui::Ui| match self.tool {
                         Tool::Aps => {
                             // Only the list of models scrolls: seven rows, as far as the window allows.
                             ui.set_width(width);
@@ -1821,7 +1846,17 @@ impl FloorTab {
                                 _ => {}
                             }
                         }
-                        });
+                        };
+                        // The whole menu shows at its full height; only past 1.5 times its width does it scroll.
+                        let measured = if natural > max_height {
+                            egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| body(ui)).content_size.y
+                        } else {
+                            ui.scope(|ui| body(ui)).response.rect.height()
+                        };
+                        if (measured - natural).abs() > 0.5 {
+                            ctx.data_mut(|d| d.insert_temp(content_id, measured));
+                            ctx.request_repaint();
+                        }
                     });
             });
         let height = shown.response.rect.height();
@@ -2199,6 +2234,15 @@ impl FloorTab {
     }
 
     /// Back to the tool in use before the area was painted.
+    /// The settings' channel options, with the widths of the chosen profile over them.
+    fn plan_options(&self) -> wifispanner_core::channels::PlanOptions {
+        let mut o = self.view.plan_options();
+        if let Some(p) = self.plan_profile {
+            (o.width_2_4, o.width_5, o.width_6) = p.widths();
+        }
+        o
+    }
+
     fn leave_zone(&mut self) {
         let back = self.zone_return.take().unwrap_or(Tool::Aps);
         self.set_tool(back);
@@ -2363,12 +2407,7 @@ impl FloorTab {
         if resp.clicked() {
             edits.push(ApEdit::Template(None));
         }
-        // Below the title, counts, hint, search and the custom row.
-        let row_h = 28.0 * theme::density(ui.ctx()).font_scale() + ui.spacing().item_spacing.y;
-        // Always seven models in view before it scrolls, whatever the window size: the menu
-        // moves up to make room rather than the list shrinking.
-        let list_height = 7.0 * row_h + 2.0;
-        egui::ScrollArea::vertical().min_scrolled_height(list_height).max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
+        ui.scope(|ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
@@ -3028,7 +3067,7 @@ impl FloorTab {
         let mut floor = project.floor().clone();
         floor.image = Vec::new();
         let (band, rx) = (self.pred_band, self.rx_height);
-        let goal = wifispanner_core::optimise::Goal { good_dbm: self.view.plan_options().good_dbm(wifispanner_core::predict::RadioBand::from_band(band)), move_aps };
+        let goal = wifispanner_core::optimise::Goal { good_dbm: self.plan_options().good_dbm(wifispanner_core::predict::RadioBand::from_band(band)), move_aps };
         let (tx, rx_chan) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(wifispanner_core::optimise::optimise(&floor, band, rx, &goal).map_err(|e| e.to_string()));
@@ -3042,7 +3081,7 @@ impl FloorTab {
         let Some(chan) = &self.optimising else { return };
         let Ok(result) = chan.try_recv() else { return };
         self.optimising = None;
-        let options = self.view.plan_options();
+        let options = self.plan_options();
         let checking = std::mem::take(&mut self.optimise_checking);
         let good_dbm = options.good_dbm(wifispanner_core::predict::RadioBand::from_band(self.pred_band));
         let had_report = self.suggestion.is_some();
@@ -3102,6 +3141,11 @@ impl FloorTab {
         let Some(s) = &self.suggestion else { return };
         let n = s.extra.len();
         let (mut add, mut close, mut repaint) = (false, false, false);
+        let mut pick_profile: Option<PlanProfile> = None;
+        let current_widths = {
+            let o = self.plan_options();
+            (o.width_2_4, o.width_5, o.width_6)
+        };
         let percent = |v: f32| (v * 100.0).round() as i32;
         let rows: Vec<(String, Vec<wifispanner_core::predict::Channel>)> = self
             .project
@@ -3123,9 +3167,19 @@ impl FloorTab {
             }
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Channel plan").strong());
+            ui.horizontal_wrapped(|ui| {
+                for (profile, label, tip) in [
+                    (PlanProfile::Interference, "Minimise interference", "20 MHz on 2.4 GHz, 40 MHz on 5 GHz, 80 MHz on 6 GHz: more separate channels."),
+                    (PlanProfile::Speed, "Max speed", "20 MHz on 2.4 GHz, 80 MHz on 5 GHz, 320 MHz on 6 GHz: faster links, fewer channels, a stronger signal needed."),
+                ] {
+                    if theme::chip(ui, current_widths == profile.widths(), None, label).on_hover_text(tip).clicked() {
+                        pick_profile = Some(profile);
+                    }
+                }
+            });
             let widths: Vec<String> = s.widths.iter().map(|(b, w)| format!("{} {w} MHz", b.band())).collect();
             ui.weak(format!(
-                "Neighbouring access points are on different channels to avoid interference, and overlap enough to roam. Planned at {}; DFS channels {}. Change these in Settings > Channels.",
+                "Neighbouring access points are on different channels to avoid interference, and overlap enough to roam. Planned at {}; DFS channels {}. Other widths and DFS are in Settings > Channels.",
                 widths.join(", "),
                 if s.dfs { "allowed" } else { "not used" }
             ));
@@ -3161,11 +3215,15 @@ impl FloorTab {
                 }
             });
         });
+        if let Some(p) = pick_profile {
+            // The plan and the recommendations are redone for the new widths at once.
+            self.plan_profile = Some(p);
+        }
         if repaint {
             self.zone_return = Some(self.tool);
             self.set_tool(Tool::Zone);
         }
-        let options = self.view.plan_options();
+        let options = self.plan_options();
         if add && let Some(s) = self.suggestion.as_mut() {
             let (extra, template_id) = (std::mem::take(&mut s.extra), s.template_id);
             s.after = s.with_extra;
@@ -3209,7 +3267,7 @@ impl FloorTab {
                 (a.x, a.y) = (x, y);
             }
         }
-        let options = self.view.plan_options();
+        let options = self.plan_options();
         apply_channel_plan(self.project.as_mut().map(|p| p.floor_mut()).expect("a project is open"), &options);
         self.status = "Access points put back where you had them.".into();
         self.pred_dirty = true;
@@ -3238,7 +3296,7 @@ impl FloorTab {
         self.optimise_tick();
         self.suggestion_dialog(ctx);
         // New channel settings: redo the channel plan and the access point recommendations at once.
-        let options = self.view.plan_options();
+        let options = self.plan_options();
         if self.optimising.is_none() {
             match self.last_plan_options {
                 Some(last) if last != options => {
