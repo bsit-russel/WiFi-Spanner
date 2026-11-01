@@ -451,6 +451,12 @@ enum WallEdit {
     Delete,
 }
 
+/// The width of the menus the side buttons open: 60 % of the optimiser's menu, which is 400 wide
+/// (470 in Carbon). What does not fit across stacks downwards instead.
+fn panel_width(ctx: &egui::Context) -> f32 {
+    0.6 * if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 }
+}
+
 /// Thumbnails of a multi-page PDF, shown so the user can pick a page.
 struct PdfPicker {
     name: String,
@@ -1683,10 +1689,12 @@ impl FloorTab {
         let r = theme::roles(ui.ctx());
         let row_h = 28.0 * theme::density(ui.ctx()).font_scale();
         let gap = ui.spacing().item_spacing.x;
-        let col_w = ((ui.available_width() - gap) / 2.0).floor();
+        // Two columns where there is room; one in a narrow menu.
+        let per_row = if ui.available_width() < 320.0 { 1 } else { 2 };
+        let col_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor();
         let font = egui::TextStyle::Body.resolve(ui.style());
         let mut picked = None;
-        for (pair_index, pair) in rows.chunks(2).enumerate() {
+        for (pair_index, pair) in rows.chunks(per_row).enumerate() {
             ui.horizontal(|ui| {
                 for (j, (name, detail, colour, selected)) in pair.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), Sense::click());
@@ -1699,7 +1707,7 @@ impl FloorTab {
                     ui.painter().text(rect.left_center() + Vec2::new(24.0, 0.0), egui::Align2::LEFT_CENTER, name, font.clone(), r.on_surface);
                     ui.painter().text(rect.right_center() - Vec2::new(8.0, 0.0), egui::Align2::RIGHT_CENTER, detail, font.clone(), r.on_surface_variant);
                     if resp.clicked() {
-                        picked = Some(pair_index * 2 + j);
+                        picked = Some(pair_index * per_row + j);
                     }
                 }
             });
@@ -1786,18 +1794,18 @@ impl FloorTab {
                     .corner_radius(theme::radius(ctx, theme::Shape::Panel, 0.0))
                     .inner_margin(10)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
-                    .show(ui, |ui| match self.tool {
+                    .show(ui, |ui| {
+                        // Narrow, and no taller than 1.5 times the width: past that the menu scrolls.
+                        let width = panel_width(ctx);
+                        egui::ScrollArea::vertical().max_height(width * 1.5).auto_shrink([false, true]).show(ui, |ui| match self.tool {
                         Tool::Aps => {
                             // Only the list of models scrolls: seven rows, as far as the window allows.
-                            ui.set_width(300.0);
+                            ui.set_width(width);
                             let room = (ctx.content_rect().bottom() - canvas.top() - 28.0).max(160.0);
                             self.devices_content(ui, floor, room, &mut aps_out);
                         }
                         tool => {
-                            // The lists of materials and kinds are in two columns, so those menus are wider.
-                            let small = tool == Tool::Scale;
-                            let empty_select = tool == Tool::Select && self.selected_walls.is_empty() && self.aps_selected.is_empty() && self.selected_areas.is_empty();
-                            ui.set_width(if small { 270.0 } else if empty_select { 240.0 } else if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
+                            ui.set_width(width);
                             match tool {
                                 Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
@@ -1808,6 +1816,7 @@ impl FloorTab {
                                 _ => {}
                             }
                         }
+                        });
                     });
             });
         let height = shown.response.rect.height();
@@ -1824,7 +1833,7 @@ impl FloorTab {
             WallMode::Wall => "Click the start, then the end of a wall.",
             WallMode::Room => "Click two opposite corners of a room.",
         };
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(theme::heading(ui, "Auto-draw Walls")).on_hover_text(format!("{how} Esc or right-click cancels. Hold Shift to turn snapping off."));
             if theme::chip(ui, self.wall_mode == WallMode::Wall, Some(ICON_EDIT), "Wall").clicked() {
                 edits.push(WallEdit::Mode(WallMode::Wall));
@@ -2126,7 +2135,7 @@ impl FloorTab {
             AreaMode::Rectangle => "Click two opposite corners.",
             AreaMode::Polygon => "Click each corner; double-click or Enter closes it.",
         };
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(theme::heading(ui, "Obstacle Areas")).on_hover_text(format!("{how} Esc or right-click cancels. Signal loses the dB per metre listed for the stretch it passes through, below the area's height."));
             if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
                 edits.push(WallEdit::AreaMode(AreaMode::Rectangle));
@@ -2145,7 +2154,7 @@ impl FloorTab {
     /// The coverage menu: brush, paint or erase, and what the paint is for.
     fn zone_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(theme::heading(ui, "Optimise: Paint the Area")).on_hover_text("The optimiser places access points and counts coverage only in the painted area, and uses only the walls it reaches.");
             if theme::chip(ui, !self.zone_erase, Some(ICON_BRUSH), "Paint").clicked() {
                 edits.push(WallEdit::ZoneErase(false));
@@ -2933,7 +2942,7 @@ impl FloorTab {
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
                         ui.set_width(300.0);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(theme::heading(ui, format!("Point #{}", i + 1)));
                             ui.label(egui::RichText::new(format!("{} APs, {} s dwell", p.observations.len(), p.dwell_secs)).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                         });
