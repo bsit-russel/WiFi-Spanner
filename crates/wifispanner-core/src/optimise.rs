@@ -18,7 +18,7 @@ use crate::survey::Floor;
 use wifispanner_scan::Band;
 
 /// The signal a spot should get, in dBm; stronger adds nothing to the score.
-pub const TARGET_DBM: f32 = -65.0;
+pub const TARGET_DBM: f32 = -68.0;
 /// Signal assumed where no access point reaches at all.
 const FLOOR_DBM: f32 = -100.0;
 /// Samples and candidate spots along the longer side of the plan.
@@ -33,15 +33,15 @@ const SEAL_M: f32 = 3.0;
 const BUFFER_M: f32 = 1.2;
 
 /// A signal this strong (dBm) or better counts as good coverage.
-pub const GOOD_DBM: f32 = -67.0;
+pub const GOOD_DBM: f32 = -70.0;
 /// Enough coverage that no more access points are suggested: the share of the floor with a good signal.
-const ENOUGH_SHARE: f32 = 0.95;
+const ENOUGH_SHARE: f32 = 0.9;
 /// Never suggest more than this many extra access points.
 const MAX_EXTRA: usize = 4;
 /// Roaming: a client should hear a second access point at least this well (dBm) where it leaves the first.
-pub const ROAM_DBM: f32 = -75.0;
+pub const ROAM_DBM: f32 = -78.0;
 /// How much the second access point's signal counts beside the first's in the score.
-const ROAM_WEIGHT: f32 = 0.1;
+const ROAM_WEIGHT: f32 = 0.03;
 /// An extra access point must add at least this share of the floor to be worth suggesting.
 const WORTH_SHARE: f32 = 0.02;
 
@@ -609,7 +609,7 @@ mod tests {
             f.aps[i].x = p[0];
             f.aps[i].y = p[1];
         }
-        assert!(mean_clamped(&f) > before + 1.0 && mean_clamped(&f) > TARGET_DBM - 0.5, "{} vs {before}", mean_clamped(&f));
+        assert!(mean_clamped(&f) > before + 0.5 && mean_clamped(&f) > TARGET_DBM - 0.5, "{} vs {before}", mean_clamped(&f));
         let (a, b) = (&f.aps[0], &f.aps[1]);
         assert!(((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt() > 100.0, "they end up apart");
     }

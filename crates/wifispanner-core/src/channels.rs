@@ -47,7 +47,7 @@ impl PlanOptions {
     /// The signal (dBm) that counts as good on a band. Every doubling of the width lets in twice
     /// the noise (3 dB), so wider channels need a stronger signal for the same quality of link.
     pub fn good_dbm(&self, band: RadioBand) -> f32 {
-        -67.0 + 3.0 * (self.width(band) as f32 / 20.0).log2()
+        -70.0 + 3.0 * (self.width(band) as f32 / 20.0).log2()
     }
 }
 
@@ -287,9 +287,9 @@ mod tests {
     #[test]
     fn wider_channels_need_a_stronger_signal_to_count_as_good() {
         let o = |w| PlanOptions { width_5: w, ..PlanOptions::default() };
-        assert_eq!(o(20).good_dbm(RadioBand::Ghz5), -67.0);
-        assert!((o(80).good_dbm(RadioBand::Ghz5) - -61.0).abs() < 1e-4);
-        assert!((o(160).good_dbm(RadioBand::Ghz5) - -58.0).abs() < 1e-4);
+        assert_eq!(o(20).good_dbm(RadioBand::Ghz5), -70.0);
+        assert!((o(80).good_dbm(RadioBand::Ghz5) - -64.0).abs() < 1e-4);
+        assert!((o(160).good_dbm(RadioBand::Ghz5) - -61.0).abs() < 1e-4);
     }
 
     #[test]
