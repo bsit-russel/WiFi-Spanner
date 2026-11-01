@@ -3171,7 +3171,8 @@ impl FloorTab {
     fn suggestion_dialog(&mut self, ctx: &egui::Context) {
         let Some(s) = &self.suggestion else { return };
         let n = s.extra.len();
-        let (mut add, mut close, mut repaint) = (false, false, false);
+        let (mut add, mut close, mut repaint, mut keep) = (false, false, false, false);
+        let hardware = self.project.as_ref().map_or(0, |p| p.floor().aps.iter().filter(|a| a.enabled).count());
         let mut pick_profile: Option<PlanProfile> = None;
         let current_widths = {
             let o = self.plan_options();
@@ -3237,7 +3238,14 @@ impl FloorTab {
                 if n > 0 && theme::button(ui, ButtonKind::Filled, Some(ICON_ADD), &format!("Add {n}")).clicked() {
                     add = true;
                 }
-                if theme::button(ui, if n > 0 { ButtonKind::Text } else { ButtonKind::Filled }, None, if n > 0 { "Not now" } else { "Done" }).clicked() {
+                if n > 0 {
+                    if theme::button(ui, ButtonKind::Filled, None, "Current hardware only")
+                        .on_hover_text("Keep the access points you have, in their optimised positions, and add nothing. Come back to add more when the budget allows.")
+                        .clicked()
+                    {
+                        keep = true;
+                    }
+                } else if theme::button(ui, ButtonKind::Filled, None, "Done").clicked() {
                     close = true;
                 }
                 if theme::button(ui, ButtonKind::Text, Some(ICON_BRUSH), "Change area").on_hover_text("Paint the area the optimiser works in again.").clicked() {
@@ -3246,6 +3254,11 @@ impl FloorTab {
                 }
             });
         });
+        if keep {
+            let after = self.suggestion.as_ref().map_or(0.0, |s| s.after);
+            self.status = format!("Optimised for the {hardware} access points you have: {}% of the floor has a good signal, with no extra hardware.", (after * 100.0).round() as i32);
+            close = true;
+        }
         if let Some(p) = pick_profile {
             // The plan and the recommendations are redone for the new widths at once.
             self.plan_profile = Some(p);
