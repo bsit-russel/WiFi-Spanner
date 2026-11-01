@@ -857,7 +857,13 @@ impl App {
                 ui.label(egui::RichText::new("WiFi Spanner").heading());
                 ui.label(TAGLINE);
                 ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                ui.add_space(6.0);
+                ui.add_space(8.0);
+                ui.weak(format!("by {BYTE_SIZE_NAME}"));
+                ui.hyperlink_to(BYTE_SIZE_SITE, BYTE_SIZE_URL);
+                if let Some(logo) = &self.byte_size_logo {
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(40.0)));
+                }
+                ui.add_space(8.0);
                 ui.label("Copyright (C) 2026 Byte Size IT");
                 ui.hyperlink_to(REPO_URL, REPO_URL);
                 ui.add_space(6.0);
@@ -867,12 +873,6 @@ impl App {
                 );
                 ui.hyperlink_to("GNU General Public License", "https://www.gnu.org/licenses/gpl-3.0.html");
                 ui.add_space(10.0);
-                ui.weak(format!("by {BYTE_SIZE_NAME}"));
-                ui.hyperlink_to(BYTE_SIZE_SITE, BYTE_SIZE_URL);
-                if let Some(logo) = &self.byte_size_logo {
-                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(40.0)));
-                }
-                ui.add_space(6.0);
                 ui.weak("Bugs and feature requests:");
                 ui.hyperlink_to(SUPPORT_EMAIL, format!("mailto:{SUPPORT_EMAIL}"));
             });
