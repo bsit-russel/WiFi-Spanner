@@ -4,9 +4,6 @@ Wi-Fi site survey and planning for Linux: import a floor plan, model walls,
 walk the building, and record the signal strength and SSIDs the laptop sees.
 Think NetSpot or Hamina, but native on Linux.
 
-Status: phase 0/1. Scanner, spike CLI and a live network table. Floor plans,
-walls and surveys come next.
-
 ## Layout
 
 | Crate | Purpose |
