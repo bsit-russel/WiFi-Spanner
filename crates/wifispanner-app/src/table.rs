@@ -287,7 +287,7 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
         // The rows.
         // A row lights only while it is held, never on hover or while scrolling. With a finger the
         // press has to stay still for a moment (moving means scrolling). With the mouse, pressing
-        // lights the row and dragging lights every row from there to the pointer.
+        // lights the row under the pointer and dragging carries the light with it.
         let held = ui.input(|i| {
             let (origin, now, start) = (i.pointer.press_origin()?, i.pointer.latest_pos()?, i.pointer.press_start_time()?);
             i.pointer.primary_down().then_some((origin, now, i.time - start))
@@ -304,7 +304,7 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
                 }
                 Some((origin.y, origin.y))
             } else {
-                Some((origin.y.min(now.y), origin.y.max(now.y)))
+                Some((now.y, now.y))
             }
         });
         for (n, row) in rows.iter().enumerate() {
