@@ -290,6 +290,9 @@ pub struct FloorTab {
     pred_band: Band,
     rx_height: f32,
     pred_texture: Option<TextureHandle>,
+    /// The prediction being worked out on another thread, and which request it answers.
+    pred_rx: Option<Receiver<(u64, Result<wifispanner_core::heatmap::Grid, String>)>>,
+    pred_gen: u64,
     pred_dirty: bool,
     pred_note: Option<String>,
     /// Another floor shown ghosted over the active one, and how strongly.
@@ -546,6 +549,8 @@ impl Default for FloorTab {
             pred_band: Band::Ghz5,
             rx_height: predict::DEFAULT_RX_HEIGHT_M,
             pred_texture: None,
+            pred_rx: None,
+            pred_gen: 0,
             pred_dirty: true,
             pred_note: None,
             overlay: None,
@@ -1308,11 +1313,43 @@ impl FloorTab {
         picked
     }
 
-    /// Recompute the predicted coverage picture for the active floor.
-    fn rebuild_prediction(&mut self, ctx: &egui::Context) {
+    /// Start working out the predicted coverage picture for the active floor, on another thread so
+    /// the window stays responsive. The old picture stays up until the new one arrives, and an
+    /// answer to a request that has since been replaced is dropped.
+    fn rebuild_prediction(&mut self, _ctx: &egui::Context) {
         self.pred_dirty = false;
-        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
-        match predict::predict(floor, self.pred_band, self.rx_height) {
+        let Some(project) = self.project.as_ref() else { return };
+        let mut floor = project.floor().clone();
+        floor.image = Vec::new();
+        let (band, rx_height) = (self.pred_band, self.rx_height);
+        self.pred_gen += 1;
+        let generation = self.pred_gen;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send((generation, predict::predict(&floor, band, rx_height).map_err(|e| e.to_string())));
+        });
+        self.pred_rx = Some(rx);
+    }
+
+    /// Take a finished prediction, if there is one, and turn it into the picture.
+    fn prediction_tick(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.pred_rx else { return };
+        let answer = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pred_rx = None;
+                return;
+            }
+        };
+        self.pred_rx = None;
+        if answer.0 != self.pred_gen {
+            return;
+        }
+        match answer.1 {
             Ok(grid) => {
                 let v = &self.view;
                 let pixels = (0..grid.w * grid.h)
@@ -1327,7 +1364,7 @@ impl FloorTab {
             }
             Err(why) => {
                 self.pred_texture = None;
-                self.pred_note = Some(why.to_string());
+                self.pred_note = Some(why);
             }
         }
     }
@@ -3756,6 +3793,7 @@ impl FloorTab {
         if self.mode == WorkMode::Plan && self.show_pred && self.pred_dirty && !self.ap_drag.is_some() {
             self.rebuild_prediction(ui.ctx());
         }
+        self.prediction_tick(ui.ctx());
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
