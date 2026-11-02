@@ -194,7 +194,6 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
     let mut resized: Vec<(usize, f32)> = Vec::new();
     let mut autofit: Vec<usize> = Vec::new();
 
-    // A finger drags the page to scroll it; the mouse never does, so its drag can light rows.
     // A finger drags the page to scroll it, as egui does by itself. While the mouse button is held
     // on the table, dragging is switched off for that frame so the drag moves the lit row instead;
     // the wheel and the scroll bars are not touched. (Switching it off works on the very frame of
