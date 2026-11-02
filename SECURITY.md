@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security problems privately, not in a public issue. Email
-[dev@byte-size.co.za](mailto:dev@byte-size.co.za) with "Security" in the subject and
+[soc@byte-size.co.za](mailto:soc@byte-size.co.za) with "Security" in the subject and
 describe what you found, the version (the app's *Report a bug...* window shows it) and how to
 reproduce it. Please do not include real network names, passwords or other personal information.
 
