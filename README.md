@@ -26,6 +26,8 @@ chmod +x WiFiSpanner-x86_64.AppImage
 
 Requirements: a **Wayland** session (the default on current Fedora, Ubuntu, openSUSE and other mainstream distributions), `iw`, and NetworkManager (`nmcli`). Wayland is the primary target: pen and graphics-tablet input uses Wayland's tablet protocol and needs a compositor that provides it (KDE Plasma, GNOME and others do). An X11 session still runs the app for mouse and touch, but pens are not supported there. Set `WS_PEN_DEBUG=1` to print pen events to the terminal when diagnosing a tablet. On Fedora, if the AppImage complains about FUSE, either `sudo dnf install fuse-libs` or run it with `--appimage-extract-and-run`.
 
+The app checks GitHub for a newer release when it starts, which shares your IP address with GitHub. Switch this off under Settings > General, or use *Check for updates* in the menu when you want it. See [SECURITY.md](SECURITY.md) for what the app does on the network and how to report a security problem.
+
 ## Building
 
 ```bash

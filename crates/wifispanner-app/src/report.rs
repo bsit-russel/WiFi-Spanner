@@ -472,6 +472,10 @@ fn place_aps(floor: &Floor, band: Band) -> Vec<PlacedAp> {
     out
 }
 
+/// What a report page may load: nothing from anywhere, apart from its own inline styles and the
+/// plan and heat pictures embedded in it. No script can run, and nothing is fetched or sent.
+const CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+
 pub fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -480,6 +484,7 @@ pub fn esc(s: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             c => out.push(c),
         }
     }
@@ -597,7 +602,7 @@ pub fn build_html(project: &Project, generated: &str, style: &ReportStyle, opts:
 
     let _ = write!(
         o,
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{} - WiFi survey report</title><style>{CSS}</style></head><body>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\"><title>{} - WiFi survey report</title><style>{CSS}</style></head><body>",
         esc(&floor.name)
     );
     // The plan is stored once and referenced by every figure.
@@ -886,6 +891,8 @@ mod tests {
         assert!(!out.contains("<script>"));
         assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(out.contains("Test &lt;plan&gt;"));
+        assert_eq!(esc("it's \"q\""), "it&#39;s &quot;q&quot;");
+        assert!(out.contains("Content-Security-Policy") && out.contains("default-src 'none'"));
         assert!(out.contains("2.5 m, 5.0 m"), "positions in metres when scaled");
     }
 
