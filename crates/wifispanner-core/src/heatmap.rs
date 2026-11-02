@@ -81,6 +81,9 @@ pub const DEFAULT_FADE_M: f32 = 8.0;
 const MIN_FADE_M: f32 = 3.0;
 const MAX_FADE_M: f32 = 15.0;
 
+/// The most points whose nearest neighbour is looked for when choosing the fade distance.
+const MAX_FADE_SAMPLES: usize = 1_500;
+
 /// The fade distance, in plan pixels, chosen from how far apart the survey
 /// points are: one and a half times the typical gap to the nearest neighbour,
 /// so the whole of a well-covered area stays solid while the colour stops
@@ -88,9 +91,13 @@ const MAX_FADE_M: f32 = 15.0;
 /// (between 4% and 40% of the plan's longer side when it is not).
 pub fn auto_fade_px(points: &[[f32; 2]], metres_per_px: Option<f32>, img_w: u32, img_h: u32) -> f32 {
     let longest = img_w.max(img_h).max(1) as f32;
+    // The typical gap is a median, so a spread of up to this many points stands for all of them:
+    // the cost stays bounded however many points there are.
+    let stride = points.len().div_ceil(MAX_FADE_SAMPLES).max(1);
     let mut gaps: Vec<f32> = points
         .iter()
         .enumerate()
+        .step_by(stride)
         .filter_map(|(i, p)| {
             points
                 .iter()
@@ -288,6 +295,11 @@ mod tests {
         // Without a scale it is a share of the plan, and never zero.
         let no_scale = auto_fade_px(&row, None, 2000, 1000);
         assert!((80.0..=800.0).contains(&no_scale), "{no_scale}");
+        // Thousands of points are sampled rather than all compared with each other, and a regular
+        // grid of them gives the same answer as a few.
+        let many: Vec<[f32; 2]> = (0..9_000).map(|i| [(i % 150) as f32 * 20.0, (i / 150) as f32 * 20.0]).collect();
+        let few: Vec<[f32; 2]> = (0..90).map(|i| [(i % 15) as f32 * 20.0, (i / 15) as f32 * 20.0]).collect();
+        assert_eq!(auto_fade_px(&many, Some(0.05), 4000, 2000), auto_fade_px(&few, Some(0.05), 4000, 2000));
     }
 
     #[test]
