@@ -167,24 +167,13 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
     let r = theme::roles(ui.ctx());
     let total = rows.len();
     if let Some(fc) = filter_col {
-        ui.horizontal(|ui| {
-            theme::field(
-                ui,
-                egui::TextEdit::singleline(&mut st.filter).hint_text(format!("Filter {} (for example Byte)", cols[fc].name)).desired_width(240.0),
-            );
-            if !st.filter.is_empty() && theme::button(ui, theme::ButtonKind::Text, None, "Clear").clicked() {
-                st.filter.clear();
-            }
-        });
         let needle = st.filter.trim().to_lowercase();
         if !needle.is_empty() {
             rows.retain(|row| row.get(fc).is_some_and(|c| c.text.to_lowercase().contains(&needle)));
         }
-        if rows.len() != total {
-            ui.label(egui::RichText::new(format!("Showing {} of {}", rows.len(), total)).color(r.on_surface_variant));
-        }
-        ui.add_space(4.0);
     }
+    let count = format!("Showing {} of {}", rows.len(), total);
+    let mut filter = st.filter.clone();
     sort_rows(&mut rows, &st.sort.keys);
 
     let carbon = theme::skin(ui.ctx()) == Skin::Carbon;
@@ -210,7 +199,10 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
         let mut x = head.left();
         for (i, col) in cols.iter().enumerate() {
             let cell = Rect::from_min_size(Pos2::new(x, head.top()), Vec2::new(widths[i], row_h));
-            let resp = ui.interact(Rect::from_min_max(cell.min, Pos2::new(cell.right() - 4.0, cell.bottom())), egui::Id::NULL.with(("head", id, i)), Sense::click());
+            // The filter symbol sits at the right of its heading; the rest of the heading sorts.
+            let icon = (filter_col == Some(i)).then(|| Rect::from_center_size(Pos2::new(cell.right() - 18.0, cell.center().y), Vec2::splat(20.0)));
+            let sort_area = Rect::from_min_max(cell.min, Pos2::new(icon.map_or(cell.right(), |r| r.left()) - 4.0, cell.bottom()));
+            let resp = ui.interact(sort_area, egui::Id::NULL.with(("head", id, i)), Sense::click());
             if resp.hovered() {
                 ui.painter().rect_filled(cell, 0.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
             }
@@ -221,7 +213,7 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
             let text_colour = if carbon { r.on_surface } else { r.on_surface_variant };
             let galley = egui::WidgetText::from(theme::medium(col.name).color(text_colour)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
             let text_pos = Pos2::new(cell.left() + PAD, cell.center().y - galley.size().y / 2.0);
-            ui.painter().with_clip_rect(Rect::from_min_max(cell.min, Pos2::new(cell.right() - 4.0, cell.bottom()))).galley(text_pos, galley.clone(), text_colour);
+            ui.painter().with_clip_rect(sort_area).galley(text_pos, galley.clone(), text_colour);
             if let Some(t) = tier {
                 // A small triangle: pointing up for A to Z or smallest first, down for the reverse.
                 let desc = st.sort.keys[t].1;
@@ -232,6 +224,27 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
                 if st.sort.keys.len() > 1 {
                     ui.painter().text(Pos2::new(c.x + s + 5.0, c.y), egui::Align2::LEFT_CENTER, (t + 1).to_string(), egui::FontId::proportional(10.0), text_colour);
                 }
+            }
+            if let Some(icon) = icon {
+                let button = ui.interact(icon, egui::Id::NULL.with(("filter", id)), Sense::click());
+                if button.hovered() {
+                    ui.painter().rect_filled(icon, 3.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.12));
+                }
+                paint_filter(ui.painter(), icon.center(), text_colour, !filter.is_empty());
+                let button = button.on_hover_text(if filter.is_empty() { "Filter".to_string() } else { format!("Filtering: {filter}") });
+                egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                    ui.set_min_width(220.0);
+                    let edit = theme::field(ui, egui::TextEdit::singleline(&mut filter).hint_text(format!("Filter {} (for example Byte)", cols[i].name)).desired_width(210.0));
+                    if !ui.memory(|m| m.has_focus(edit.id)) && filter.is_empty() {
+                        edit.request_focus();
+                    }
+                    ui.horizontal(|ui| {
+                        if theme::button(ui, theme::ButtonKind::Text, None, "Clear").clicked() {
+                            filter.clear();
+                        }
+                        ui.label(egui::RichText::new(&count).color(r.on_surface_variant));
+                    });
+                });
             }
             // The line between this heading and the next: drag to resize, double-click to fit.
             let seam = ui.interact(Rect::from_min_max(Pos2::new(cell.right() - 4.0, cell.top()), Pos2::new(cell.right() + 4.0, cell.bottom())), egui::Id::NULL.with(("seam", id, i)), Sense::click_and_drag());
@@ -277,6 +290,10 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
         }
     });
 
+    if filter != st.filter {
+        st.filter = filter;
+        ui.ctx().request_repaint();
+    }
     for (i, dx) in resized {
         st.widths[i] = (st.widths[i] + dx).max(MIN_WIDTH);
     }
@@ -287,6 +304,30 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
         st.sort.click(i, cols[i].desc_first, Instant::now());
     }
     ui.data_mut(|d| d.insert_temp(key, st));
+}
+
+/// A funnel: an outline, or filled while a filter is on.
+fn paint_filter(painter: &egui::Painter, centre: Pos2, colour: Color32, on: bool) {
+    let (w, h, stem) = (7.0, 6.5, 1.6);
+    // The wide top and the narrow stem, each convex, so each fills cleanly.
+    let top = vec![Pos2::new(centre.x - w, centre.y - h), Pos2::new(centre.x + w, centre.y - h), Pos2::new(centre.x + stem, centre.y + 0.5), Pos2::new(centre.x - stem, centre.y + 0.5)];
+    let neck = vec![Pos2::new(centre.x - stem, centre.y + 0.5), Pos2::new(centre.x + stem, centre.y + 0.5), Pos2::new(centre.x + stem, centre.y + h), Pos2::new(centre.x - stem, centre.y + h - 1.5)];
+    let stroke = Stroke::new(1.4, colour);
+    if on {
+        painter.add(egui::Shape::convex_polygon(top, colour, stroke));
+        painter.add(egui::Shape::convex_polygon(neck, colour, stroke));
+    } else {
+        // One outline round both, without the line where they meet.
+        let outline = vec![
+            Pos2::new(centre.x - w, centre.y - h),
+            Pos2::new(centre.x + w, centre.y - h),
+            Pos2::new(centre.x + stem, centre.y + 0.5),
+            Pos2::new(centre.x + stem, centre.y + h),
+            Pos2::new(centre.x - stem, centre.y + h - 1.5),
+            Pos2::new(centre.x - stem, centre.y + 0.5),
+        ];
+        painter.add(egui::Shape::closed_line(outline, stroke));
+    }
 }
 
 #[cfg(test)]
