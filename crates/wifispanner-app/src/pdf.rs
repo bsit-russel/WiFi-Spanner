@@ -13,6 +13,9 @@ use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
 /// text on a plan; the texture is downscaled further for display.
 const PAGE_SIDE_PX: f32 = 4000.0;
 const MAX_SCALE: f32 = 8.0;
+/// The longest side a rendered page may have, whatever the page claims to measure: a PDF can
+/// declare a page of any size, and the picture is one pixel buffer.
+const MAX_OUTPUT_PX: f32 = 8000.0;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
     bytes.starts_with(b"%PDF")
@@ -48,12 +51,21 @@ pub fn thumbnails(bytes: Vec<u8>, side_px: f32, mut on_page: impl FnMut(usize, V
     }
 }
 
+/// The scale to draw a `w` by `h` point page at so its longer side is about `target_side` pixels,
+/// never above [`MAX_OUTPUT_PX`]. `None` when the page has no real size.
+fn output_scale(w: f32, h: f32, target_side: f32) -> Option<f32> {
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let longest = w.max(h);
+    let scale = (target_side / longest).clamp(0.1, MAX_SCALE);
+    // The floor on the scale must not let a huge page through.
+    Some(scale.min(MAX_OUTPUT_PX / longest))
+}
+
 fn rasterize<'a>(page: &'a Page<'a>, cache: &RenderCache<'a>, target_side: f32) -> Result<Vec<u8>, String> {
     let (w, h) = page.render_dimensions();
-    if !(w > 0.0 && h > 0.0) {
-        return Err("the PDF page has no size".into());
-    }
-    let scale = (target_side / w.max(h)).clamp(0.1, MAX_SCALE);
+    let scale = output_scale(w, h, target_side).ok_or("the PDF page has no usable size")?;
     let rendered = render(
         page,
         cache,
@@ -92,6 +104,20 @@ mod tests {
         }
         out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).bytes());
         out
+    }
+
+    #[test]
+    fn a_page_is_never_drawn_wider_than_the_limit_and_nonsense_sizes_are_refused() {
+        // An ordinary page keeps its scale.
+        assert_eq!(output_scale(200.0, 100.0, 4000.0), Some(8.0_f32.min(4000.0 / 200.0)));
+        // A page claiming to be 1,000,000 points wide: the 0.1 floor alone would give 100,000 px.
+        let scale = output_scale(1_000_000.0, 500.0, 4000.0).unwrap();
+        assert!(1_000_000.0 * scale <= MAX_OUTPUT_PX + 0.5, "{scale}");
+        // A tall page is bounded on its longer side too.
+        assert!(80_000.0 * output_scale(100.0, 80_000.0, 4000.0).unwrap() <= MAX_OUTPUT_PX + 0.5);
+        for (w, h) in [(0.0, 10.0), (10.0, -1.0), (f32::NAN, 5.0), (f32::INFINITY, 5.0)] {
+            assert_eq!(output_scale(w, h, 4000.0), None, "{w} x {h}");
+        }
     }
 
     #[test]
