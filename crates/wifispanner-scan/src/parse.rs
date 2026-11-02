@@ -177,7 +177,8 @@ pub fn parse_scan_dump(text: &str) -> Vec<Network> {
         } else if line.trim_start().starts_with("SSID:") {
             let v = line.trim_start().trim_start_matches("SSID:");
             let v = v.strip_prefix(' ').unwrap_or(v);
-            acc.net.ssid = if v.replace("\\x00", "").is_empty() { None } else { Some(v.to_string()) };
+            let v = clean_ssid(v);
+            acc.net.ssid = if v.replace("\\x00", "").is_empty() { None } else { Some(v) };
         } else if t.starts_with("capability:") {
             acc.privacy = t.contains("Privacy");
         } else if t.starts_with("RSN:") {
@@ -249,6 +250,19 @@ pub fn parse_survey_dump(text: &str) -> Vec<Survey> {
         }
     }
     out
+}
+
+/// An SSID with the characters that could mislead or break what shows it taken out: control
+/// characters, and the ones that reorder or hide text (left-to-right and right-to-left marks,
+/// embeddings, overrides and isolates, zero-width characters). Network names are chosen by whoever
+/// runs the network, not by the user.
+pub fn clean_ssid(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -359,5 +373,14 @@ Survey data from wlp2s0
                 InterfaceInfo { name: "wlp2s0".into(), phy: "phy#0".into() },
             ]
         );
+    }
+
+    #[test]
+    fn control_and_direction_characters_are_stripped_from_network_names() {
+        assert_eq!(clean_ssid("Home Net"), "Home Net");
+        assert_eq!(clean_ssid("caf\u{e9} \u{4e2d}\u{6587}"), "caf\u{e9} \u{4e2d}\u{6587}", "ordinary non-ASCII text stays");
+        assert_eq!(clean_ssid("Free\u{202E}iFiW"), "FreeiFiW");
+        assert_eq!(clean_ssid("a\u{2066}b\u{2069}\u{200B}c\u{FEFF}"), "abc");
+        assert_eq!(clean_ssid("tab\there\nline\u{7}bell\u{1b}[31m"), "tabherelinebell[31m");
     }
 }

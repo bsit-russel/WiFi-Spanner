@@ -650,7 +650,7 @@ impl FloorTab {
 
     fn save_to(&mut self, path: &PathBuf) {
         let Some(p) = &self.project else { return };
-        match p.to_json().map_err(|e| e.to_string()).and_then(|j| std::fs::write(path, j).map_err(|e| e.to_string())) {
+        match p.to_json().map_err(|e| e.to_string()).and_then(|j| store::write_atomic(path, j.as_bytes()).map_err(|e| e.to_string())) {
             Ok(()) => self.path = Some(path.clone()),
             Err(e) => self.status = format!("Could not save {}: {e}", path.display()),
         }
@@ -1447,7 +1447,7 @@ impl FloorTab {
                         if let Some(dir) = path.parent() {
                             let _ = std::fs::create_dir_all(dir);
                         }
-                        let _ = std::fs::write(path, text);
+                        let _ = store::write_atomic(&path, text.as_bytes());
                     }
                     self.models = catalog::merged(self.user_models.clone());
                     self.status = format!("Saved \"{}\" to your models.", fl.layer(planning)[i].name);

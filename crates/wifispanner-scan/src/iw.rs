@@ -4,7 +4,8 @@
 //! Linux scanner: NetworkManager triggers the scan, `iw` reads the kernel's
 //! scan cache. Neither step needs root.
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -22,7 +23,10 @@ pub struct IwScanner {
 impl IwScanner {
     pub fn detect(iface: Option<String>) -> Result<Self> {
         let iface = match iface {
-            Some(i) => i,
+            Some(i) => {
+                check_interface_name(&i)?;
+                i
+            }
             None => {
                 let out = run("iw", &["dev"]).context("could not list wireless interfaces")?;
                 parse::first_interface(&out).ok_or_else(|| anyhow!("no wireless interface found"))?
@@ -147,11 +151,58 @@ pub fn regulatory_domain() -> Option<String> {
     out.lines().find(|l| l.starts_with("country ")).map(|l| l.trim().to_string())
 }
 
+/// How long one `iw` or `nmcli` call may take before it is stopped.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// An interface name is something like `wlan0` or `wlp2s0`: no more than 15 characters of letters,
+/// digits and a few marks, and never starting with `-`, which `iw` would read as an option.
+pub fn check_interface_name(name: &str) -> Result<()> {
+    let plain = name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+    if name.is_empty() || name.len() > 15 || name.starts_with('-') || !plain {
+        bail!("`{name}` is not a wireless interface name (expected something like wlan0)");
+    }
+    Ok(())
+}
+
+/// Run a program and collect its output, giving up (and stopping it) after [`COMMAND_TIMEOUT`].
 fn run(program: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
+    run_for(program, args, COMMAND_TIMEOUT)
+}
+
+fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<String> {
+    let mut child = Command::new(program)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("failed to run `{program}` (is it installed and on PATH?)"))?;
+    // The output is read on other threads as it arrives, so a program that writes a lot cannot
+    // stall on a full pipe while we wait for it.
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("could not wait for the program")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = (stdout.join(), stderr.join());
+            bail!("`{program} {}` did not finish within {} seconds and was stopped", args.join(" "), timeout.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let out = std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() };
     if !out.status.success() {
         bail!(
             "`{program} {}` failed: {}",
@@ -160,4 +211,31 @@ fn run(program: &str, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interface_names_that_iw_could_take_for_options_or_paths_are_refused() {
+        for ok in ["wlan0", "wlp2s0", "wlx00c0ca123456", "wl-lan.1"] {
+            assert!(check_interface_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "-h", "--version", "a b", "wlan0;ls", "../x", "this-name-is-too-long", "w\0"] {
+            assert!(check_interface_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_program_that_does_not_finish_is_stopped_and_a_chatty_one_is_not_stalled() {
+        let started = Instant::now();
+        let err = run_for("sleep", &["30"], Duration::from_millis(200)).unwrap_err().to_string();
+        assert!(err.contains("did not finish"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Three megabytes on stdout: far more than a pipe holds, so it needs the reader threads.
+        let out = run_for("sh", &["-c", "head -c 3000000 /dev/zero | tr '\\0' 'x'"], Duration::from_secs(20)).unwrap();
+        assert_eq!(out.len(), 3_000_000);
+        assert!(run_for("sh", &["-c", "echo oops >&2; exit 3"], Duration::from_secs(5)).unwrap_err().to_string().contains("oops"));
+    }
 }

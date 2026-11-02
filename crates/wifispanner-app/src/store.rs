@@ -83,6 +83,29 @@ fn move_item(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// `$XDG_CONFIG_HOME/wifispanner`, falling back to `~/.config/wifispanner`.
+/// Write `bytes` to `path` so that a crash or a full disk part-way never leaves half a file in its
+/// place: they go to a new file beside it, which replaces `path` in one step once it is complete.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().map_or("file".into(), |n| n.to_string_lossy().into_owned());
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let tmp = path.with_file_name(format!(".{name}.tmp-{}-{nanos}", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // Keep the permissions of the file being replaced, if there is one.
+        if let Ok(meta) = std::fs::metadata(path) {
+            let _ = std::fs::set_permissions(&tmp, meta.permissions());
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -264,5 +287,20 @@ mod move_tests {
         assert!(a.join("x.wifispanner").exists());
         assert!(move_projects(&b, &b.join("inner")).is_err());
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_whole_and_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("ws-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("p.wifispanner");
+        write_atomic(&file, b"first").unwrap();
+        write_atomic(&file, b"second, longer").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second, longer");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["p.wifispanner".to_string()], "no temporary file is left");
+        // A failure (the directory is gone) is an error and leaves nothing either.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(write_atomic(&file, b"x").is_err());
     }
 }

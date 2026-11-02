@@ -22,7 +22,11 @@ fn main() -> Result<()> {
                 println!("Usage: spike [INTERFACE] [--mock] [--watch] [--max-age SECONDS]");
                 return Ok(());
             }
-            _ => iface = Some(a),
+            _ if a.starts_with('-') => anyhow::bail!("unknown option `{a}` (try --help)"),
+            _ => {
+                wifispanner_scan::iw::check_interface_name(&a)?;
+                iface = Some(a);
+            }
         }
     }
 
