@@ -3103,19 +3103,29 @@ impl FloorTab {
                             ui.label(theme::heading(ui, format!("Point #{}", i + 1)));
                             ui.label(egui::RichText::new(format!("{} APs, {} s dwell", p.observations.len(), p.dwell_secs)).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                         });
-                        let mut obs: Vec<_> = p.observations.iter().collect();
-                        obs.sort_by(|a, b| b.signal_dbm.total_cmp(&a.signal_dbm));
-                        egui::ScrollArea::vertical().id_salt("obs").max_height(260.0).show(ui, |ui| {
-                            theme::data_table(ui, "obs_grid", &["SSID", "Ch", "Band", "dBm", "Seen"], 10.0, |ui| {
-                                for o in obs {
-                                    theme::cell(ui, |ui| ui.label(o.ssid.as_deref().unwrap_or("<hidden>")));
-                                    theme::cell(ui, |ui| ui.label(o.channel.to_string()));
-                                    theme::cell(ui, |ui| ui.label(o.band().to_string()));
-                                    theme::cell(ui, |ui| ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm)));
-                                    theme::cell(ui, |ui| ui.label(o.samples.to_string()));
-                                    ui.end_row();
-                                }
-                            });
+                        let cols = [
+                            crate::table::Column { name: "SSID", desc_first: false },
+                            crate::table::Column { name: "Ch", desc_first: false },
+                            crate::table::Column { name: "Band", desc_first: false },
+                            crate::table::Column { name: "dBm", desc_first: true },
+                            crate::table::Column { name: "Seen", desc_first: true },
+                        ];
+                        let dark = ui.visuals().dark_mode;
+                        let rows: Vec<Vec<crate::table::Cell>> = p
+                            .observations
+                            .iter()
+                            .map(|o| {
+                                vec![
+                                    crate::table::Cell::text(o.ssid.as_deref().unwrap_or("<hidden>")),
+                                    crate::table::Cell::number(Some(o.channel as f64), o.channel.to_string()),
+                                    crate::table::Cell::text(o.band().to_string()),
+                                    crate::table::Cell::number(Some(o.signal_dbm), format!("{:.0}", o.signal_dbm)).colour(signal_color(o.signal_dbm, dark)),
+                                    crate::table::Cell::number(Some(o.samples as f64), o.samples.to_string()),
+                                ]
+                            })
+                            .collect();
+                        ui.allocate_ui(Vec2::new(ui.available_width(), 280.0), |ui| {
+                            crate::table::show(ui, "obs_grid", &cols, Some(0), &[(3, true)], rows);
                         });
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {

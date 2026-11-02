@@ -9,6 +9,7 @@ mod floor;
 mod gallery;
 mod launcher;
 mod pen;
+mod table;
 mod live;
 mod pdf;
 mod report;
@@ -1171,7 +1172,7 @@ impl eframe::App for App {
         }
         match self.tab {
             Tab::Scanning => {
-                egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| live::show(ui, self.latest.as_ref()));
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::roles(ui.ctx()).surface)).show(ui, |ui| live::show(ui, self.latest.as_ref()));
             }
             Tab::Surveying | Tab::Planning if self.surveying_gallery => {
                 match self.gallery.show(ui, &self.settings) {

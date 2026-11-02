@@ -11,36 +11,47 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
         ui.centered_and_justified(|ui| ui.label(egui::RichText::new("Waiting for first scan...").size(18.0)));
         return;
     };
-    let mut nets: Vec<_> = r.networks.iter().collect();
-    nets.sort_by(|a, b| b.signal_dbm.partial_cmp(&a.signal_dbm).unwrap_or(std::cmp::Ordering::Equal));
-
-    egui::ScrollArea::both().show(ui, |ui| {
-        crate::theme::data_table(ui, "networks", &["SSID", "BSSID", "Ch", "Band", "Width", "Standard", "Security", "Signal", "Seen", "Util"], 16.0, |ui| {
-            use crate::theme::cell;
-            for n in nets {
-                let ssid = n.ssid.as_deref().unwrap_or("<hidden>");
-                cell(ui, |ui| {
-                    if n.associated {
-                        ui.strong(format!("{ssid} (connected)"));
-                    } else {
-                        ui.label(ssid);
-                    }
-                });
-                cell(ui, |ui| ui.monospace(&n.bssid));
-                cell(ui, |ui| ui.label(n.channel.to_string()));
-                cell(ui, |ui| ui.label(n.band.to_string()));
-                cell(ui, |ui| ui.label(format!("{} MHz", n.width_mhz)));
-                cell(ui, |ui| ui.label(n.standard.to_string()));
-                cell(ui, |ui| ui.label(n.security.to_string()));
-                cell(ui, |ui| match n.signal_dbm {
-                    Some(s) => ui.colored_label(signal_color(s, ui.visuals().dark_mode), format!("{s:.0} dBm")),
-                    None => ui.label("-"),
-                });
-                cell(ui, |ui| ui.label(if n.samples == 0 { "stale".to_string() } else { n.samples.to_string() }));
-                cell(ui, |ui| ui.label(n.channel_util_pct.map_or("-".into(), |u| format!("{u:.0}%"))));
-                ui.end_row();
-            }
-        });
+    use crate::table::{Cell, Column};
+    let cols = [
+        Column { name: "SSID", desc_first: false },
+        Column { name: "BSSID", desc_first: false },
+        Column { name: "Ch", desc_first: false },
+        Column { name: "Band", desc_first: false },
+        Column { name: "Width", desc_first: true },
+        Column { name: "Standard", desc_first: false },
+        Column { name: "Security", desc_first: false },
+        Column { name: "Signal", desc_first: true },
+        Column { name: "Seen", desc_first: true },
+        Column { name: "Util", desc_first: true },
+    ];
+    let dark = ui.visuals().dark_mode;
+    let rows: Vec<Vec<Cell>> = r
+        .networks
+        .iter()
+        .map(|n| {
+            let ssid = n.ssid.as_deref().unwrap_or("<hidden>");
+            let name = if n.associated { Cell::text(format!("{ssid} (connected)")).strong() } else { Cell::text(ssid) };
+            let signal = match n.signal_dbm {
+                Some(s) => Cell::number(Some(s), format!("{s:.0} dBm")).colour(signal_color(s, dark)),
+                None => Cell::number(None, "-"),
+            };
+            vec![
+                name,
+                Cell::text(&n.bssid).mono(),
+                Cell::number(Some(n.channel as f64), n.channel.to_string()),
+                Cell::text(n.band.to_string()),
+                Cell::number(Some(n.width_mhz as f64), format!("{} MHz", n.width_mhz)),
+                Cell::text(n.standard.to_string()),
+                Cell::text(n.security.to_string()),
+                signal,
+                Cell::number(Some(n.samples as f64), if n.samples == 0 { "stale".to_string() } else { n.samples.to_string() }),
+                Cell::number(n.channel_util_pct.map(|u| u as f64), n.channel_util_pct.map_or("-".into(), |u| format!("{u:.0}%"))),
+            ]
+        })
+        .collect();
+    // The page's margin is on the left and top only, so the scroll bar sits at the window's edge.
+    egui::Frame::new().inner_margin(egui::Margin { left: 16, top: 16, right: 0, bottom: 0 }).show(ui, |ui| {
+        crate::table::show(ui, "networks", &cols, Some(0), &[(7, true)], rows);
     });
 }
 
