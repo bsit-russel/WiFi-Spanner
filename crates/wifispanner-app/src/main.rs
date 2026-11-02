@@ -993,7 +993,9 @@ impl eframe::App for App {
                 }
             }
         }
-        let touching = self.settings.pen_mode && (!self.touches.is_empty() || lifted);
+        let finger = !self.touches.is_empty() || lifted;
+        ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("touch_input"), finger));
+        let touching = self.settings.pen_mode && finger;
         ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("finger_touching"), touching));
         let Some(rx) = &self.pen_rx else { return };
         let events: Vec<_> = rx.try_iter().collect();

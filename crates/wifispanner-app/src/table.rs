@@ -194,6 +194,8 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
     let mut resized: Vec<(usize, f32)> = Vec::new();
     let mut autofit: Vec<usize> = Vec::new();
 
+    // A finger drags the page to scroll it; the mouse never does, so its drag can light rows.
+    let touch = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("touch_input"))).unwrap_or(false);
     egui::ScrollArea::both().id_salt(("table-scroll", id)).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         // The headings.
@@ -283,27 +285,34 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
             x += widths[i];
         }
         // The rows.
-        // A row lights only while it is held: pressed, kept still for a moment, and not yet
-        // let go. Moving the pointer over the table, scrolling, or dragging the page with a
-        // finger lights nothing.
+        // A row lights only while it is held, never on hover or while scrolling. With a finger the
+        // press has to stay still for a moment (moving means scrolling). With the mouse, pressing
+        // lights the row and dragging lights every row from there to the pointer.
         let held = ui.input(|i| {
             let (origin, now, start) = (i.pointer.press_origin()?, i.pointer.latest_pos()?, i.pointer.press_start_time()?);
-            (i.pointer.primary_down() && origin.distance(now) < HOLD_MOVE).then_some((origin, i.time - start))
+            i.pointer.primary_down().then_some((origin, now, i.time - start))
         });
-        let pressed_on = held.map(|(origin, _)| origin).filter(|o| ui.rect_contains_pointer(ui.max_rect()) || ui.max_rect().contains(*o));
-        if let Some((_, since)) = held
-            && since < HOLD_AFTER
-            && pressed_on.is_some()
-        {
-            ui.ctx().request_repaint_after(Duration::from_secs_f64(HOLD_AFTER - since + 0.01));
-        }
-        let held_at = held.filter(|(_, since)| *since >= HOLD_AFTER).and(pressed_on);
+        let area = ui.max_rect();
+        let lit: Option<(f32, f32)> = held.filter(|(origin, _, _)| area.contains(*origin)).and_then(|(origin, now, since)| {
+            if touch {
+                if origin.distance(now) >= HOLD_MOVE {
+                    return None;
+                }
+                if since < HOLD_AFTER {
+                    ui.ctx().request_repaint_after(Duration::from_secs_f64(HOLD_AFTER - since + 0.01));
+                    return None;
+                }
+                Some((origin.y, origin.y))
+            } else {
+                Some((origin.y.min(now.y), origin.y.max(now.y)))
+            }
+        });
         for (n, row) in rows.iter().enumerate() {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(table_w.max(ui.available_width()), row_h), Sense::hover());
             if !ui.is_rect_visible(rect) {
                 continue;
             }
-            let hot = held_at.is_some_and(|p| rect.contains(p));
+            let hot = lit.is_some_and(|(top, bottom)| rect.bottom() > top && rect.top() <= bottom);
             if hot {
                 ui.painter().rect_filled(rect, 0.0, hover_fill);
             } else if n % 2 == 1 {
