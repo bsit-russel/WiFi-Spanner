@@ -17,6 +17,33 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "bsit-russel/WiFi-Spanner";
+/// Where release pages and downloads must be hosted; anything else in the reply is not trusted.
+const GITHUB: &str = "https://github.com/";
+/// The largest AppImage accepted (the real one is about 30 MB).
+const MAX_ASSET_BYTES: u64 = 200 << 20;
+/// Redirects followed: the API sends a renamed or moved repository on once, a download goes on to
+/// GitHub's storage.
+const MAX_REDIRECTS: u32 = 4;
+
+/// An HTTP client that speaks only HTTPS (redirects included) and follows a few redirects at most.
+fn agent(timeout: Duration) -> ureq::Agent {
+    // The tests serve the download from a local plain-HTTP port, so only they may use HTTP.
+    agent_with(timeout, !cfg!(test))
+}
+
+fn agent_with(timeout: Duration, https_only: bool) -> ureq::Agent {
+    ureq::Agent::config_builder().timeout_global(Some(timeout)).https_only(https_only).max_redirects(MAX_REDIRECTS).build().into()
+}
+
+/// Is `url` a place releases are downloaded from? (The tests' local server is allowed too.)
+fn trusted_download(url: &str) -> bool {
+    cfg!(test) || url.starts_with(GITHUB)
+}
+
+/// A release page on GitHub, or the repository's latest release when the reply names anything else.
+fn release_page(url: String) -> String {
+    if url.starts_with(GITHUB) && url.chars().all(|c| c.is_ascii_graphic()) { url } else { format!("{GITHUB}{REPO}/releases/latest") }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {
@@ -67,7 +94,9 @@ fn pick_asset(assets: Vec<AssetJson>) -> Option<Asset> {
         let hex = a.digest.as_deref()?.strip_prefix("sha256:")?.to_ascii_lowercase();
         let ok = a.name.ends_with(".AppImage")
             && a.size > 0
-            && a.browser_download_url.starts_with("https://")
+            && a.size <= MAX_ASSET_BYTES
+            && a.browser_download_url.starts_with(GITHUB)
+            && a.browser_download_url.chars().all(|c| c.is_ascii_graphic())
             && hex.len() == 64
             && hex.chars().all(|c| c.is_ascii_hexdigit());
         ok.then(|| Asset { url: a.browser_download_url, size: a.size, sha256: hex })
@@ -86,8 +115,7 @@ pub fn check(current: &str) -> Result<Option<UpdateInfo>, String> {
 }
 
 fn fetch_public() -> Result<String, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().into();
-    let mut response = agent
+    let mut response = agent(Duration::from_secs(8))
         .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
         .header("User-Agent", concat!("wifispanner/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
@@ -136,7 +164,7 @@ fn newest_after(json: &str, current: &str) -> Result<Option<UpdateInfo>, String>
         .filter_map(|r| Some((parse_version(&r.tag_name)?, r)))
         .max_by_key(|(v, _)| *v)
         .filter(|(v, _)| *v > current)
-        .map(|(_, r)| UpdateInfo { notes: notes_from(r.body.as_deref()), asset: pick_asset(r.assets), tag: r.tag_name, url: r.html_url }))
+        .map(|(_, r)| UpdateInfo { notes: notes_from(r.body.as_deref()), asset: pick_asset(r.assets), tag: r.tag_name, url: release_page(r.html_url) }))
 }
 
 /// Which update notices to stay quiet about: a version the user skipped, and
@@ -204,8 +232,13 @@ pub fn running_appimage() -> Option<PathBuf> {
 /// `progress` gets the bytes downloaded so far; setting `cancel` aborts.
 pub fn install(asset: &Asset, target: &Path, cancel: &AtomicBool, progress: impl FnMut(u64)) -> Result<(), String> {
     let name = target.file_name().map_or("app".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = target.with_file_name(format!(".{name}.update-{}", std::process::id()));
-    let result = download(&asset.url, &tmp, asset.size, cancel, progress)
+    if asset.size > MAX_ASSET_BYTES || !trusted_download(&asset.url) {
+        return Err("the update is not from where it should be, so it was not downloaded".into());
+    }
+    // The download goes to a file beside the app with a name nobody could have guessed, created
+    // only if it is new, so nothing already there (a link, say) can be written through.
+    let (tmp, file) = create_temp(target, &name)?;
+    let result = download(&asset.url, file, &tmp, asset.size, cancel, progress)
         .and_then(|sha| replace(&tmp, target, &sha, &asset.sha256));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -213,17 +246,42 @@ pub fn install(asset: &Asset, target: &Path, cancel: &AtomicBool, progress: impl
     result
 }
 
-/// Stream `url` into `dest`, returning the SHA-256 of what was written. The
+/// A new file beside `target` with a random name, readable and writable by this user only.
+fn create_temp(target: &Path, name: &str) -> Result<(PathBuf, std::fs::File), String> {
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..8 {
+        // RandomState is seeded from the system's random source for every instance.
+        let token = std::collections::hash_map::RandomState::new().build_hasher().finish() ^ (unix_nanos() as u64);
+        let path = target.with_file_name(format!(".{name}.update-{token:016x}"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("could not write beside {}: {e}", target.display())),
+        }
+    }
+    Err("could not make a file for the download".into())
+}
+
+fn unix_nanos() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+}
+
+/// Stream `url` into `file` (at `dest`), returning the SHA-256 of what was written. The
 /// body must be exactly `expected_size` bytes.
-fn download(url: &str, dest: &Path, expected_size: u64, cancel: &AtomicBool, mut progress: impl FnMut(u64)) -> Result<String, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(900))).build().into();
-    let mut response = agent
+fn download(url: &str, mut file: std::fs::File, dest: &Path, expected_size: u64, cancel: &AtomicBool, mut progress: impl FnMut(u64)) -> Result<String, String> {
+    let mut response = agent(Duration::from_secs(900))
         .get(url)
         .header("User-Agent", concat!("wifispanner/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
     let mut reader = response.body_mut().as_reader();
-    let mut file = std::fs::File::create(dest).map_err(|e| format!("could not write {}: {e}", dest.display()))?;
     let (mut hasher, mut buf, mut done) = (Sha256::new(), vec![0u8; 64 * 1024], 0u64);
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -287,11 +345,11 @@ mod tests {
     use super::*;
 
     const JSON: &str = r#"[
-        {"tag_name":"v0.2.0","html_url":"https://example.test/0.2.0","draft":false,"prerelease":true},
-        {"tag_name":"v0.10.0","html_url":"https://example.test/0.10.0","draft":false,"prerelease":true},
-        {"tag_name":"v9.9.9","html_url":"https://example.test/draft","draft":true,"prerelease":false},
-        {"tag_name":"nightly","html_url":"https://example.test/nightly","draft":false,"prerelease":true},
-        {"tag_name":"v0.1.1","html_url":"https://example.test/0.1.1","draft":false,"prerelease":true}
+        {"tag_name":"v0.2.0","html_url":"https://github.com/example/0.2.0","draft":false,"prerelease":true},
+        {"tag_name":"v0.10.0","html_url":"https://github.com/example/0.10.0","draft":false,"prerelease":true},
+        {"tag_name":"v9.9.9","html_url":"https://github.com/example/draft","draft":true,"prerelease":false},
+        {"tag_name":"nightly","html_url":"https://github.com/example/nightly","draft":false,"prerelease":true},
+        {"tag_name":"v0.1.1","html_url":"https://github.com/example/0.1.1","draft":false,"prerelease":true}
     ]"#;
 
     #[test]
@@ -304,7 +362,7 @@ mod tests {
     #[test]
     fn picks_the_highest_release_comparing_numbers_not_text() {
         let got = newest_after(JSON, "0.3.0").unwrap().unwrap();
-        assert_eq!(got, UpdateInfo { tag: "v0.10.0".into(), url: "https://example.test/0.10.0".into(), asset: None, notes: vec![] });
+        assert_eq!(got, UpdateInfo { tag: "v0.10.0".into(), url: "https://github.com/example/0.10.0".into(), asset: None, notes: vec![] });
     }
 
     #[test]
@@ -317,6 +375,51 @@ mod tests {
     fn drafts_and_odd_tags_are_ignored() {
         // v9.9.9 is a draft and "nightly" is not a version.
         assert!(newest_after(JSON, "0.0.1").unwrap().is_some_and(|u| u.tag == "v0.10.0"));
+    }
+
+    #[test]
+    fn only_github_downloads_of_a_sensible_size_are_accepted() {
+        let asset = |url: &str, size: u64| AssetJson { name: "WiFiSpanner-x86_64.AppImage".into(), size, digest: Some(format!("sha256:{}", "a".repeat(64))), browser_download_url: url.into() };
+        let good = "https://github.com/bsit-russel/WiFi-Spanner/releases/download/v1.0.0/WiFiSpanner-x86_64.AppImage";
+        assert!(pick_asset(vec![asset(good, 30 << 20)]).is_some());
+        assert!(pick_asset(vec![asset("https://evil.example/x.AppImage", 30 << 20)]).is_none());
+        assert!(pick_asset(vec![asset("https://github.com.evil.example/x.AppImage", 30 << 20)]).is_none());
+        assert!(pick_asset(vec![asset("http://github.com/x.AppImage", 30 << 20)]).is_none());
+        assert!(pick_asset(vec![asset(good, MAX_ASSET_BYTES + 1)]).is_none());
+        assert!(pick_asset(vec![asset(&format!("{good}\nX"), 30 << 20)]).is_none());
+    }
+
+    #[test]
+    fn a_release_page_off_github_is_replaced_by_the_repository_page() {
+        assert_eq!(release_page("https://github.com/bsit-russel/WiFi-Spanner/releases/tag/v1.0.0".into()), "https://github.com/bsit-russel/WiFi-Spanner/releases/tag/v1.0.0");
+        let fallback = format!("https://github.com/{REPO}/releases/latest");
+        assert_eq!(release_page("https://evil.example/".into()), fallback);
+        assert_eq!(release_page("javascript:alert(1)".into()), fallback);
+        assert_eq!(release_page("https://github.com/x y".into()), fallback);
+    }
+
+    #[test]
+    fn the_download_file_is_new_private_and_unpredictably_named() {
+        let dir = std::env::temp_dir().join(format!("ws-update-test-{}", unix_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("app.AppImage");
+        let (a, _fa) = create_temp(&target, "app.AppImage").unwrap();
+        let (b, _fb) = create_temp(&target, "app.AppImage").unwrap();
+        assert_ne!(a, b);
+        assert!(a.file_name().unwrap().to_string_lossy().starts_with(".app.AppImage.update-"));
+        assert!(!a.to_string_lossy().contains(&std::process::id().to_string()) || a != target.with_file_name(format!(".app.AppImage.update-{}", std::process::id())));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_real_client_refuses_plain_http() {
+        let err = agent_with(Duration::from_secs(2), true).get("http://127.0.0.1:9/x").call().unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("http"), "{err}");
     }
 
     #[test]
@@ -340,6 +443,11 @@ mod tests {
     fn live_check() {
         eprintln!("public: {:?}", fetch_public().map(|b| b.len()));
         eprintln!("gh: {:?}", fetch_with_gh().map(|b| b.len()));
+        // The production client (HTTPS only, few redirects) against the real API and the old repository name, which GitHub redirects.
+        for repo in [REPO, "rubble-za/WiFi-Spanner"] {
+            let r = agent_with(Duration::from_secs(8), true).get(format!("https://api.github.com/repos/{repo}/releases?per_page=1")).header("User-Agent", "wifispanner-test").call();
+            eprintln!("https-only {repo}: {:?}", r.map(|r| r.status()).map_err(|e| e.to_string()));
+        }
         let old = check("0.1.0").unwrap().expect("an older version should see a newer release");
         eprintln!("from 0.1.0 the newest is {old:?}");
         eprintln!("from 99.0.0: {:?}", check("99.0.0"));
@@ -354,15 +462,15 @@ mod tests {
         let hex = "ab".repeat(32);
         let good = format!("sha256:{}", hex.to_uppercase());
         let got = pick_asset(vec![
-            asset_json("notes.txt", Some(&good), "https://x.test/notes.txt"),
-            asset_json("a.AppImage", None, "https://x.test/nodigest"),
-            asset_json("b.AppImage", Some("sha1:abc"), "https://x.test/sha1"),
+            asset_json("notes.txt", Some(&good), "https://github.com/x/notes.txt"),
+            asset_json("a.AppImage", None, "https://github.com/x/nodigest"),
+            asset_json("b.AppImage", Some("sha1:abc"), "https://github.com/x/sha1"),
             asset_json("c.AppImage", Some(&good), "http://x.test/plain"),
-            asset_json("d.AppImage", Some(&good), "https://x.test/d.AppImage"),
+            asset_json("d.AppImage", Some(&good), "https://github.com/x/d.AppImage"),
         ])
         .unwrap();
-        assert_eq!((got.url.as_str(), got.sha256.as_str(), got.size), ("https://x.test/d.AppImage", hex.as_str(), 10));
-        assert!(pick_asset(vec![asset_json("e.AppImage", Some("sha256:zz"), "https://x.test/e")]).is_none());
+        assert_eq!((got.url.as_str(), got.sha256.as_str(), got.size), ("https://github.com/x/d.AppImage", hex.as_str(), 10));
+        assert!(pick_asset(vec![asset_json("e.AppImage", Some("sha256:zz"), "https://github.com/x/e")]).is_none());
     }
 
     #[test]
