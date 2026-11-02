@@ -13,7 +13,7 @@ use wifispanner_scan::iw::{WifiCard, default_card};
 
 /// Selectable scan times in seconds: how long scanning continues before the
 /// scans are collated into one reading.
-pub const DWELLS: [u64; 3] = [3, 5, 10];
+pub const DWELLS: [u64; 4] = [3, 5, 7, 10];
 
 /// Limits of the signal sliders, in dBm.
 pub const SIGNAL_FLOOR: f64 = -100.0;
