@@ -31,6 +31,21 @@ pub struct Project {
     floor: Option<Floor>,
 }
 
+/// The largest project file read, in bytes: the plan image is inside it.
+pub const MAX_PROJECT_BYTES: usize = 512 << 20;
+const MAX_FLOORS: usize = 100;
+const MAX_WALLS: usize = 50_000;
+const MAX_AREAS: usize = 5_000;
+const MAX_POINTS: usize = 200_000;
+const MAX_APS: usize = 2_000;
+const MAX_STROKES: usize = 20_000;
+const MAX_VERTICES: usize = 2_000;
+const MAX_STROKE_POINTS: usize = 200_000;
+const MAX_OBSERVATIONS: usize = 5_000;
+/// The biggest plan, in pixels along a side, and how far from the origin any position may be.
+const MAX_SIDE_PX: u32 = 65_535;
+const COORD_LIMIT: f32 = 1.0e6;
+
 impl Project {
     pub const VERSION: u32 = 2;
 
@@ -43,7 +58,11 @@ impl Project {
     }
 
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
+        if s.len() > MAX_PROJECT_BYTES {
+            return Err(serde::de::Error::custom(format!("the project file is too large ({} MB; the limit is {} MB)", s.len() >> 20, MAX_PROJECT_BYTES >> 20)));
+        }
         let mut p: Project = serde_json::from_str(s)?;
+        p.validate().map_err(serde::de::Error::custom)?;
         if let Some(old) = p.floor.take() {
             p.floors.insert(0, old);
         }
@@ -56,6 +75,68 @@ impl Project {
             f.migrate_ap_layers();
         }
         Ok(p)
+    }
+
+    /// Refuse a project with numbers that cannot be right or more of anything than the app can
+    /// sensibly hold, so a damaged or hostile file is turned away instead of loaded.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.floors.len() > MAX_FLOORS {
+            return Err(format!("the project has {} floors; the limit is {MAX_FLOORS}", self.floors.len()));
+        }
+        let ok = |v: f32| v.is_finite() && v.abs() <= COORD_LIMIT;
+        let ok_point = |p: &[f32; 2]| ok(p[0]) && ok(p[1]);
+        for (n, f) in self.floors.iter().enumerate() {
+            let at = |what: &str| format!("floor {} ({}): {what}", n + 1, f.name);
+            let count = |what: &str, len: usize, max: usize| if len > max { Err(at(&format!("{len} {what}; the limit is {max}"))) } else { Ok(()) };
+            if f.width_px == 0 || f.height_px == 0 || f.width_px > MAX_SIDE_PX || f.height_px > MAX_SIDE_PX {
+                return Err(at(&format!("the plan is {} x {} px; each side must be 1 to {MAX_SIDE_PX}", f.width_px, f.height_px)));
+            }
+            if let Some(m) = f.metres_per_px
+                && !(m.is_finite() && m > 0.0 && m < 1000.0)
+            {
+                return Err(at("the scale is not a sensible number"));
+            }
+            if !(f.ceiling_m.is_finite() && f.ceiling_m > 0.0 && f.ceiling_m <= 1000.0) {
+                return Err(at("the ceiling height is not a sensible number"));
+            }
+            if !(ok_point(&f.placement.offset) && f.placement.rotation_deg.is_finite()) {
+                return Err(at("the floor's placement is not a sensible number"));
+            }
+            count("walls", f.walls.len(), MAX_WALLS)?;
+            count("obstacle areas", f.areas.len(), MAX_AREAS)?;
+            count("survey points", f.points.len(), MAX_POINTS)?;
+            count("access points", f.aps.len(), MAX_APS)?;
+            count("plotted access points", f.survey_aps.len(), MAX_APS)?;
+            count("painted strokes", f.zone.len(), MAX_STROKES)?;
+            if let Some(w) = f.walls.iter().find(|w| !ok_point(&w.a) || !ok_point(&w.b) || w.height_m.is_some_and(|h| !h.is_finite())) {
+                return Err(at(&format!("a wall has a position that is not a sensible number ({:?} to {:?})", w.a, w.b)));
+            }
+            for a in &f.areas {
+                count("corners in an obstacle area", a.points.len(), MAX_VERTICES)?;
+                if !a.points.iter().all(ok_point) || a.height_m.is_some_and(|h| !h.is_finite()) {
+                    return Err(at("an obstacle area has a position that is not a sensible number"));
+                }
+            }
+            for s in &f.zone {
+                count("points in a painted stroke", s.points.len(), MAX_STROKE_POINTS)?;
+                if !s.points.iter().all(ok_point) || !(s.radius.is_finite() && s.radius >= 0.0 && s.radius <= COORD_LIMIT) {
+                    return Err(at("a painted stroke has a number that is not sensible"));
+                }
+            }
+            for ap in f.aps.iter().chain(&f.survey_aps) {
+                let radios_ok = ap.radios.iter().all(|r| r.tx_dbm.is_finite() && r.gain_dbi.is_finite());
+                if !(ok(ap.x) && ok(ap.y) && ap.height_m.is_finite() && ap.tx_dbm.is_finite() && ap.gain_dbi.is_finite() && radios_ok) {
+                    return Err(at(&format!("access point {} has a number that is not sensible", ap.name)));
+                }
+            }
+            for p in &f.points {
+                count("networks at a survey point", p.observations.len(), MAX_OBSERVATIONS)?;
+                if !(ok(p.x) && ok(p.y)) || !p.observations.iter().all(|o| o.signal_dbm.is_finite()) {
+                    return Err(at("a survey point has a number that is not sensible"));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The floor being worked on.
@@ -362,6 +443,50 @@ mod tests {
             signal_dbm: dbm,
             samples: 3,
         }
+    }
+
+    #[test]
+    fn a_project_with_impossible_numbers_or_too_much_is_refused_on_load() {
+        use crate::walls::Wall;
+        use crate::Material;
+        let good = || Project::new(blank("a", Some(0.1)));
+        assert!(good().validate().is_ok());
+        let json = |p: &Project| p.to_json().unwrap();
+        assert!(Project::from_json(&json(&good())).is_ok());
+
+        let mut far = good();
+        far.floor_mut().walls.push(Wall::new([0.0, 0.0], [1.0e9, 5.0], Material::Concrete));
+        assert!(Project::from_json(&json(&far)).unwrap_err().to_string().contains("wall"));
+
+        let mut nan = good();
+        nan.floor_mut().walls.push(Wall::new([f32::NAN, 0.0], [5.0, 5.0], Material::Concrete));
+        assert!(nan.validate().is_err());
+
+        let mut scale = good();
+        scale.floor_mut().metres_per_px = Some(f32::INFINITY);
+        assert!(scale.validate().is_err());
+        scale.floor_mut().metres_per_px = Some(0.0);
+        assert!(scale.validate().is_err());
+
+        let mut many = good();
+        many.floor_mut().walls = vec![Wall::new([0.0, 0.0], [1.0, 1.0], Material::Concrete); MAX_WALLS + 1];
+        assert!(many.validate().unwrap_err().contains("walls"));
+
+        let mut big = good();
+        big.floor_mut().width_px = MAX_SIDE_PX + 1;
+        assert!(big.validate().is_err());
+
+        let mut points = good();
+        let mut p = point();
+        p.observations = vec![obs("aa", "x", 2412, f64::INFINITY)];
+        points.floor_mut().points.push(p);
+        assert!(points.validate().is_err());
+    }
+
+    #[test]
+    fn a_project_file_over_the_size_limit_is_refused_without_parsing_it() {
+        let huge = " ".repeat(MAX_PROJECT_BYTES + 1);
+        assert!(Project::from_json(&huge).unwrap_err().to_string().contains("too large"));
     }
 
     fn point() -> SurveyPoint {
