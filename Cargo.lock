@@ -4567,7 +4567,7 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-app"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "base64",
  "damascene-fonts-roboto",
@@ -4593,7 +4593,7 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-core"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "base64",
  "serde",
@@ -4603,14 +4603,14 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-scan"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "wifispanner-spike"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "wifispanner-scan",
