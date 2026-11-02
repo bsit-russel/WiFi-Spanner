@@ -345,6 +345,38 @@ fn painted_zone(mask: &Mask) -> Option<Zone> {
     Some(Zone { min, max, cell: mask.cell, w, inside: cells.clone(), placing: cells, hull: None })
 }
 
+/// The most cells the zone grid may have.
+const MAX_ZONE_CELLS: usize = 4_000_000;
+/// The coarsest the zone grid may be, in metres per cell: past this the walls are too spread out to
+/// trace and the zone is not used.
+const MAX_CELL_M: f32 = 1.0;
+
+/// The grid for the walls' zone: cell size in pixels, margin, buffer and padding in cells, and the
+/// width and height in cells. The cell starts at 0.2 m and grows until the grid is no bigger than
+/// [`MAX_ZONE_CELLS`]; `None` when the extent is not a real number or is too large to trace.
+fn zone_grid(min: [f32; 2], max: [f32; 2], mpp: f32) -> Option<(f32, usize, usize, usize, usize, usize)> {
+    if !(min.iter().chain(&max).all(|v| v.is_finite()) && mpp.is_finite() && mpp > 0.0) {
+        return None;
+    }
+    let mut cell = (0.2 / mpp).max(2.0);
+    loop {
+        if !cell.is_finite() || cell * mpp > MAX_CELL_M {
+            return None;
+        }
+        // The margin kept around the walls, in cells: it closes gaps in the walls (a doorway, the space
+        // between a garage and the house) and is the buffer around the building where coverage counts.
+        let margin = (SEAL_M / (cell * mpp)).ceil() as usize;
+        let buffer = (BUFFER_M / (cell * mpp)).ceil() as usize;
+        let pad = margin + 3;
+        let across = |k: usize| (((max[k] - min[k]) / cell).ceil() as f64) + 2.0 * pad as f64;
+        let (w, h) = (across(0), across(1));
+        if w * h <= MAX_ZONE_CELLS as f64 {
+            return Some((cell, margin, buffer, pad, w as usize, h as usize));
+        }
+        cell *= 1.25;
+    }
+}
+
 /// The part of the plan inside the main group of walls, or `None` when there are too few walls to tell.
 fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
     let walls = &floor.walls;
@@ -421,13 +453,7 @@ fn safe_zone(floor: &Floor, mpp: f32) -> Option<Zone> {
             }
         }
     }
-    let cell = (0.2 / mpp).max(2.0);
-    // The margin kept around the walls, in cells: it closes gaps in the walls (a doorway, the space
-    // between a garage and the house) and is the buffer around the building where coverage counts.
-    let margin = (SEAL_M / (cell * mpp)).ceil() as usize;
-    let buffer = (BUFFER_M / (cell * mpp)).ceil() as usize;
-    let pad = margin + 3;
-    let (w, h) = ((((max[0] - min[0]) / cell).ceil() as usize) + 2 * pad, (((max[1] - min[1]) / cell).ceil() as usize) + 2 * pad);
+    let (cell, margin, buffer, pad, w, h) = zone_grid(min, max, mpp)?;
     let origin = [min[0] - pad as f32 * cell, min[1] - pad as f32 * cell];
     let mut wall = vec![false; w * h];
     for s in &mine {
@@ -688,6 +714,21 @@ mod tests {
         f.walls.extend([w([60.0, 150.0], [160.0, 150.0]), w([60.0, 350.0], [160.0, 350.0]), w([60.0, 150.0], [60.0, 350.0]), w([160.0, 150.0], [160.0, 350.0])]);
         let zone = safe_zone(&f, 0.1).unwrap();
         assert!(zone.contains([100.0, 250.0]) && zone.contains([400.0, 250.0]));
+    }
+
+    #[test]
+    fn the_zone_grid_stays_small_and_refuses_absurd_extents() {
+        // An ordinary house: 0.2 m cells.
+        let (cell, ..) = zone_grid([0.0, 0.0], [500.0, 400.0], 0.1).unwrap();
+        assert_eq!(cell, 2.0);
+        // A big site at fine scale: the cell grows so the grid stays within the cap.
+        let (cell, _, _, _, w, h) = zone_grid([0.0, 0.0], [10_000.0, 7_500.0], 0.1).unwrap();
+        assert!(cell > 2.0 && w * h <= MAX_ZONE_CELLS, "{cell} {w}x{h}");
+        // Walls kilometres apart, or not real numbers, give no zone rather than a huge grid.
+        assert!(zone_grid([0.0, 0.0], [1.0e9, 1.0e9], 0.1).is_none());
+        assert!(zone_grid([f32::MAX, f32::MAX], [f32::MIN, f32::MIN], 0.1).is_none());
+        assert!(zone_grid([0.0, f32::NAN], [10.0, 10.0], 0.1).is_none());
+        assert!(zone_grid([0.0, 0.0], [10.0, 10.0], 0.0).is_none());
     }
 
     #[test]
