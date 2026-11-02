@@ -123,13 +123,46 @@ impl Mask {
         (x0 != usize::MAX).then(|| ([x0 as f32 * self.cell, y0 as f32 * self.cell], [x1 as f32 * self.cell, y1 as f32 * self.cell]))
     }
 
-    /// Does any part of the line from `a` to `b` pass through paint?
+    /// Does any part of the line from `a` to `b` pass through paint? Only the stretch of the line
+    /// over the grid is walked, so a line running off to a huge distance costs no more than the grid.
     pub fn touches_line(&self, a: [f32; 2], b: [f32; 2]) -> bool {
-        let steps = ((dist(a, b) / self.cell).ceil() as usize).max(1);
+        let Some((t0, t1)) = self.clip_to_grid(a, b) else { return false };
+        let (p, q) = ([a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0], [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1]);
+        // No more steps than there are cells to cross along either side of the grid.
+        let steps = ((dist(p, q) / self.cell).ceil() as usize).clamp(1, self.w + self.h);
         (0..=steps).any(|i| {
             let t = i as f32 / steps as f32;
-            self.contains([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+            self.contains([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t])
         })
+    }
+
+    /// The part of the line `a` to `b`, as a pair of positions along it (0 at `a`, 1 at `b`), that
+    /// lies over the grid; `None` when none of it does or the points are not real numbers.
+    fn clip_to_grid(&self, a: [f32; 2], b: [f32; 2]) -> Option<(f32, f32)> {
+        if !(a.iter().chain(&b).all(|v| v.is_finite())) {
+            return None;
+        }
+        let size = [self.w as f32 * self.cell, self.h as f32 * self.cell];
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        for k in 0..2 {
+            let d = b[k] - a[k];
+            if d.abs() < f32::EPSILON {
+                if a[k] < 0.0 || a[k] > size[k] {
+                    return None;
+                }
+                continue;
+            }
+            let (mut lo, mut hi) = ((0.0 - a[k]) / d, (size[k] - a[k]) / d);
+            if lo > hi {
+                std::mem::swap(&mut lo, &mut hi);
+            }
+            t0 = t0.max(lo);
+            t1 = t1.min(hi);
+            if t0 > t1 {
+                return None;
+            }
+        }
+        Some((t0, t1))
     }
 }
 
@@ -245,6 +278,20 @@ mod tests {
         assert!(!between_walls(&walls, [500.0, 50.0]));
         // No premises drawn yet: nothing to be outside of.
         assert!(may_place(&walls[..2], [900.0, 900.0]) && !may_place(&walls, [500.0, 50.0]));
+    }
+
+    #[test]
+    fn a_line_off_the_grid_or_running_far_beyond_it_is_cheap_and_still_right() {
+        let m = Mask::from_strokes(&[stroke(&[[10.0, 50.0], [90.0, 50.0]], 6.0, false)], 100.0, 100.0);
+        // Wholly off the grid, and not real numbers: no paint.
+        assert!(!m.touches_line([500.0, 500.0], [900.0, 900.0]));
+        assert!(!m.touches_line([f32::NAN, 0.0], [10.0, 10.0]));
+        assert!(!m.touches_line([0.0, f32::INFINITY], [10.0, 10.0]));
+        // A line across the grid from enormous distances still finds the paint it crosses.
+        assert!(m.touches_line([50.0, -1.0e9], [50.0, 1.0e9]));
+        assert!(!m.touches_line([-1.0e9, 5.0], [1.0e9, 5.0]));
+        // A line that only ends on the grid.
+        assert!(m.touches_line([50.0, 51.0], [50.0, 1.0e8]));
     }
 
     #[test]
