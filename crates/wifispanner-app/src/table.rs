@@ -234,7 +234,25 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
                 let button = button.on_hover_text(if filter.is_empty() { "Filter".to_string() } else { format!("Filtering: {filter}") });
                 egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     ui.set_min_width(220.0);
-                    let edit = theme::field(ui, egui::TextEdit::singleline(&mut filter).hint_text(format!("Filter {} (for example Byte)", cols[i].name)).desired_width(210.0));
+                    // No ring round the box while typing: the cursor already shows that. The text
+                    // sits at the left, centred up and down, over a thin line along the bottom.
+                    let edit = ui
+                        .scope(|ui| {
+                            ui.visuals_mut().selection.stroke = Stroke::NONE;
+                            ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+                            ui.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut filter)
+                                    .hint_text(format!("Filter {} (for example Byte)", cols[i].name))
+                                    .desired_width(210.0)
+                                    .align(egui::Align2::LEFT_CENTER)
+                                    .margin(egui::Margin::symmetric(8, 0))
+                                    .min_size(Vec2::new(210.0, 32.0)),
+                            );
+                            ui.painter().line_segment([edit.rect.left_bottom() - Vec2::new(0.0, 0.5), edit.rect.right_bottom() - Vec2::new(0.0, 0.5)], Stroke::new(1.0, r.outline));
+                            edit
+                        })
+                        .inner;
                     if !ui.memory(|m| m.has_focus(edit.id)) && filter.is_empty() {
                         edit.request_focus();
                     }
