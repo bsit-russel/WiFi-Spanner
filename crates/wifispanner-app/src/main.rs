@@ -1205,14 +1205,20 @@ enum MenuAction {
 }
 
 /// An icon button with three bars, drawn with the painter, that shows a
-/// Material state layer (a soft circle) on hover and press.
+/// state layer on hover and press: a soft circle in Material, a square in Carbon.
 fn hamburger_button(ui: &mut egui::Ui, bar_h: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(bar_h - 6.0), egui::Sense::click());
     let roles = theme::roles(ui.ctx());
     let painter = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
         let opacity = if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 };
-        painter.circle_filled(rect.center(), rect.width() / 2.0, roles.on_surface.gamma_multiply(opacity));
+        // A soft circle in Material, a square in Carbon.
+        let shade = roles.on_surface.gamma_multiply(opacity);
+        if theme::skin(ui.ctx()) == theme::Skin::Carbon {
+            painter.rect_filled(rect, 0.0, shade);
+        } else {
+            painter.circle_filled(rect.center(), rect.width() / 2.0, shade);
+        }
     }
     let (c, half, gap) = (rect.center(), rect.width() * 0.26, rect.height() * 0.17);
     for dy in [-gap, 0.0, gap] {

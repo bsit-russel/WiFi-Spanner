@@ -16,7 +16,7 @@ On Linux the scanner asks NetworkManager to rescan (`nmcli`, allowed for the log
 
 ## Running on Linux (AppImage)
 
-Download `WiFiSpanner-x86_64.AppImage` from the latest Actions run, then:
+Download `WiFiSpanner-x86_64.AppImage` from the [latest release](https://github.com/bsit-russel/WiFi-Spanner/releases/latest), then:
 
 ```bash
 chmod +x WiFiSpanner-x86_64.AppImage
