@@ -11,7 +11,7 @@
 //! walls. Neighbouring access points land on different channels, so a client roaming between
 //! them keeps a clean link on each.
 
-use crate::predict::{scene, signal_from, Channel, RadioBand};
+use crate::predict::{scene, signal_from, Channel, RadioBand, Scene};
 use crate::survey::Floor;
 use wifispanner_scan::Band;
 
@@ -157,13 +157,12 @@ const OWN_CHANNEL_UP_TO: usize = 3;
 const EXHAUSTIVE_UP_TO: usize = 8;
 
 /// How much two access points disturb each other when on one channel: 0 when they cannot hear each other.
-fn coupling(floor: &Floor, band: Band, mpp: Option<f32>, a: usize, b: usize) -> f32 {
-    let Some(mpp) = mpp else { return 1.0 };
-    let scene = scene(floor, mpp, band);
+fn coupling(floor: &Floor, band: Band, scene: Option<&Scene>, mpp: f32, a: usize, b: usize) -> f32 {
+    let Some(scene) = scene else { return 1.0 };
     let hear = |from: usize, to: usize| {
         let (f, t) = (&floor.aps[from], &floor.aps[to]);
         let Some(eirp) = f.eirp_dbm(band) else { return f32::MIN };
-        signal_from(f, eirp, [f.x * mpp, f.y * mpp], [t.x * mpp, t.y * mpp, t.height_m], &scene, band)
+        signal_from(f, eirp, [f.x * mpp, f.y * mpp], [t.x * mpp, t.y * mpp, t.height_m], scene, band)
     };
     let strongest = hear(a, b).max(hear(b, a));
     (strongest - AUDIBLE_DBM).max(0.0)
@@ -174,9 +173,11 @@ fn assign(floor: &Floor, band: RadioBand, aps: &[usize], k: usize) -> (Vec<usize
     let n = aps.len();
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0);
     let mut w = vec![vec![0.0f32; n]; n];
+    // The walls and obstacles are worked out once for the band, not again for every pair.
+    let scene = mpp.map(|m| scene(floor, m, band.band()));
     for i in 0..n {
         for j in i + 1..n {
-            w[i][j] = coupling(floor, band.band(), mpp, aps[i], aps[j]);
+            w[i][j] = coupling(floor, band.band(), scene.as_ref(), mpp.unwrap_or(1.0), aps[i], aps[j]);
             w[j][i] = w[i][j];
         }
     }
