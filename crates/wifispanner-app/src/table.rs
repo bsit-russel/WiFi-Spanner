@@ -196,7 +196,12 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
 
     // A finger drags the page to scroll it; the mouse never does, so its drag can light rows.
     let touch = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("touch_input"))).unwrap_or(false);
-    egui::ScrollArea::both().id_salt(("table-scroll", id)).auto_shrink([false, false]).show(ui, |ui| {
+    // Dragging scrolls only with a finger; with the mouse it never does (the wheel and the bar
+    // still scroll), so a drag can move the lit row. egui alone would let the mouse drag the page
+    // too once a touch screen has been seen.
+    let drag = if touch { egui::scroll_area::DragScroll::Always } else { egui::scroll_area::DragScroll::Never };
+    let source = egui::scroll_area::ScrollSource { drag, ..egui::scroll_area::ScrollSource::default() };
+    egui::ScrollArea::both().id_salt(("table-scroll", id)).scroll_source(source).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         // The headings.
         let (head, _) = ui.allocate_exact_size(Vec2::new(table_w.max(ui.available_width()), row_h), Sense::hover());
