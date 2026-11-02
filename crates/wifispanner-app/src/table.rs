@@ -20,6 +20,9 @@ const MAX_TIERS: usize = 2;
 const PAD: f32 = 10.0;
 const MIN_WIDTH: f32 = 36.0;
 const MAX_FIT: f32 = 420.0;
+/// A press has to stay this still (pixels), and this long (seconds), to light the row.
+const HOLD_MOVE: f32 = 8.0;
+const HOLD_AFTER: f64 = 0.12;
 
 pub struct Column {
     pub name: &'static str,
@@ -280,13 +283,27 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
             x += widths[i];
         }
         // The rows.
-        let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(ui.max_rect()));
+        // A row lights only while it is held: pressed, kept still for a moment, and not yet
+        // let go. Moving the pointer over the table, scrolling, or dragging the page with a
+        // finger lights nothing.
+        let held = ui.input(|i| {
+            let (origin, now, start) = (i.pointer.press_origin()?, i.pointer.latest_pos()?, i.pointer.press_start_time()?);
+            (i.pointer.primary_down() && origin.distance(now) < HOLD_MOVE).then_some((origin, i.time - start))
+        });
+        let pressed_on = held.map(|(origin, _)| origin).filter(|o| ui.rect_contains_pointer(ui.max_rect()) || ui.max_rect().contains(*o));
+        if let Some((_, since)) = held
+            && since < HOLD_AFTER
+            && pressed_on.is_some()
+        {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(HOLD_AFTER - since + 0.01));
+        }
+        let held_at = held.filter(|(_, since)| *since >= HOLD_AFTER).and(pressed_on);
         for (n, row) in rows.iter().enumerate() {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(table_w.max(ui.available_width()), row_h), Sense::hover());
             if !ui.is_rect_visible(rect) {
                 continue;
             }
-            let hot = pointer.is_some_and(|p| rect.contains(p));
+            let hot = held_at.is_some_and(|p| rect.contains(p));
             if hot {
                 ui.painter().rect_filled(rect, 0.0, hover_fill);
             } else if n % 2 == 1 {
