@@ -23,6 +23,8 @@ const MAX_FIT: f32 = 420.0;
 /// A press has to stay this still (pixels), and this long (seconds), to light the row.
 const HOLD_MOVE: f32 = 8.0;
 const HOLD_AFTER: f64 = 0.12;
+/// Frames dragging stays off after a mouse press ends.
+const RELEASE_FRAMES: u8 = 6;
 
 pub struct Column {
     pub name: &'static str,
@@ -131,6 +133,8 @@ struct State {
     sorted_once: bool,
     filter: String,
     widths: Vec<f32>,
+    /// Frames left after a mouse press during which dragging stays switched off.
+    cool: u8,
 }
 
 fn rich(c: &Cell) -> egui::RichText {
@@ -201,7 +205,20 @@ pub fn show(ui: &mut egui::Ui, id: &str, cols: &[Column], filter_col: Option<usi
     let touch = ui.data(|d| d.get_temp::<bool>(egui::Id::NULL.with("touch_input"))).unwrap_or(false);
     let area = ui.available_rect_before_wrap();
     let mouse_held = !touch && ui.input(|i| i.pointer.primary_down() && i.pointer.press_origin().is_some_and(|o| area.contains(o)));
-    let source = if mouse_held {
+    // It stays off for a few frames after the button is let go: egui would otherwise take the
+    // release as the end of a drag on the page and let it glide on at the pointer's speed.
+    if mouse_held {
+        st.cool = RELEASE_FRAMES;
+    }
+    let drag_off = mouse_held || (!touch && st.cool > 0);
+    if !mouse_held && st.cool > 0 {
+        st.cool -= 1;
+        ui.ctx().request_repaint();
+    }
+    if touch {
+        st.cool = 0;
+    }
+    let source = if drag_off {
         egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..egui::scroll_area::ScrollSource::default() }
     } else {
         egui::scroll_area::ScrollSource::default()
