@@ -293,6 +293,9 @@ pub struct FloorTab {
     /// The prediction being worked out on another thread, and which request it answers.
     pred_rx: Option<Receiver<(u64, Result<wifispanner_core::heatmap::Grid, String>)>>,
     pred_gen: u64,
+    /// The same for the survey heatmap.
+    heat_rx: Option<Receiver<(u64, wifispanner_core::heatmap::Grid)>>,
+    heat_gen: u64,
     pred_dirty: bool,
     pred_note: Option<String>,
     /// Another floor shown ghosted over the active one, and how strongly.
@@ -551,6 +554,8 @@ impl Default for FloorTab {
             pred_texture: None,
             pred_rx: None,
             pred_gen: 0,
+            heat_rx: None,
+            heat_gen: 0,
             pred_dirty: true,
             pred_note: None,
             overlay: None,
@@ -3790,6 +3795,7 @@ impl FloorTab {
         if self.zone_dirty {
             self.rebuild_zone_texture(ui.ctx());
         }
+        self.heat_tick(ui.ctx());
         if self.mode == WorkMode::Plan && self.show_pred && self.pred_dirty && !self.ap_drag.is_some() {
             self.rebuild_prediction(ui.ctx());
         }
@@ -4135,7 +4141,8 @@ impl FloorTab {
         }
     }
 
-    fn rebuild_heat(&mut self, ctx: &egui::Context) {
+    /// Start working out the survey heatmap on another thread, like the prediction.
+    fn rebuild_heat(&mut self, _ctx: &egui::Context) {
         self.heat_dirty = false;
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         let samples: Vec<Sample> = floor
@@ -4143,9 +4150,36 @@ impl FloorTab {
             .iter()
             .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at_min(p, &self.target, self.band, self.view.detect_dbm) })
             .collect();
-        let positions: Vec<[f32; 2]> = floor.points.iter().map(|p| [p.x, p.y]).collect();
-        let fade_px = heatmap::auto_fade_px(&positions, floor.metres_per_px, floor.width_px, floor.height_px);
-        let grid = heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px);
+        let (mpp, w, h) = (floor.metres_per_px, floor.width_px, floor.height_px);
+        self.heat_gen += 1;
+        let generation = self.heat_gen;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let positions: Vec<[f32; 2]> = samples.iter().map(|s| [s.x, s.y]).collect();
+            let fade_px = heatmap::auto_fade_px(&positions, mpp, w, h);
+            let _ = tx.send((generation, heatmap::interpolate(&samples, w, h, HEAT_CELLS, fade_px)));
+        });
+        self.heat_rx = Some(rx);
+    }
+
+    /// Take a finished heatmap, if there is one, and turn it into the picture.
+    fn heat_tick(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.heat_rx else { return };
+        let (generation, grid) = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.heat_rx = None;
+                return;
+            }
+        };
+        self.heat_rx = None;
+        if generation != self.heat_gen {
+            return;
+        }
         let pixels = (0..grid.w * grid.h)
             .map(|i| {
                 let v = &self.view;
